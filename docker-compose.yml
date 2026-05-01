@@ -1,0 +1,288 @@
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bytesim
+      POSTGRES_PASSWORD: bytesim
+      POSTGRES_DB: bytesim
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP probe rather than the Unix socket the
+      # init scripts use during the first-pass startup. Otherwise pg_isready
+      # passes during the init phase, deps start, then PG restarts to bind
+      # TCP — racing the deps into "connection refused" before they retry.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bytesim -d bytesim"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  redpanda:
+    restart: unless-stopped
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --default-log-level warn
+    ports:
+      - "19092:19092"  # external Kafka API (host)
+      - "18081:18081"  # schema registry
+    volumes:
+      - rpdata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - sh
+      - -c
+      - |
+        rpk -X brokers=redpanda:9092 topic create bs.events --partitions 3 --replicas 1 || true
+        echo "topics ready"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: prep the bind-mounted /artifacts volume so non-root services
+  # (engine-svc app:1001, run-svc nonroot:65532) can both write into it.
+  # Without this, Docker auto-creates /artifacts as root → PermissionError
+  # when engine-svc tries to mkdir /artifacts/sim-XXXXXX.
+  artifacts-init:
+    image: busybox:latest
+    command: ["sh", "-c", "mkdir -p /artifacts && chmod 0777 /artifacts && echo 'artifacts dir ready'"]
+    volumes:
+      - ./infra/artifacts:/artifacts
+    restart: "no"
+
+  run-svc:
+    restart: unless-stopped
+    build:
+      context: ./services/run-svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim?sslmode=disable"
+      ARTIFACTS_DIR: "/artifacts"
+      LISTEN_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    volumes:
+      # RW so PATCH /v1/runs/{id} log_append can grow engine.log;
+      # engine-svc writes the structured artifacts (timeline.json etc.) via its own mount.
+      - ./infra/artifacts:/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifacts-init:
+        condition: service_completed_successfully
+
+  asset-svc:
+    restart: unless-stopped
+    build:
+      context: ./services/asset-svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim?sslmode=disable"
+      LISTEN_ADDR: ":8082"
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  surrogate-svc:
+    restart: unless-stopped
+    build:
+      # RFC-001 v2 — needs shared/engine_contracts + shared/engine_runtime
+      # which live outside services/. Build from repo root.
+      context: .
+      dockerfile: services/surrogate-svc/Dockerfile
+    environment:
+      ENGINE_REGISTRY_URL: "http://engine-registry-svc:8089"
+    ports:
+      - "8083:8083"
+
+  engine-svc:
+    restart: unless-stopped
+    build:
+      context: ./services/engine-svc
+    environment:
+      RUN_SVC_URL: "http://run-svc:8081"
+      # RFC-001 v2 — engine-svc/clients.py:predict ships the {payload: ...}
+      # registry envelope shape; without ENGINE_REGISTRY_URL it falls back
+      # to SURROGATE_URL and posts the envelope directly to surrogate, which
+      # rejects the wrapper as invalid EnginePredictRequest (422). Setting
+      # the registry URL is the v2 happy path.
+      ENGINE_REGISTRY_URL: "http://engine-registry-svc:8089"
+      SURROGATE_URL: "http://surrogate-svc:8083"
+      TCO_SVC_URL: "http://tco-engine-svc:8090"
+      KAFKA_BOOTSTRAP: "redpanda:9092"
+      ARTIFACTS_DIR: "/artifacts"
+      POLL_INTERVAL_S: "2"
+    ports:
+      - "8087:8087"
+    volumes:
+      - ./infra/artifacts:/artifacts
+    depends_on:
+      run-svc:
+        condition: service_healthy
+      surrogate-svc:
+        condition: service_healthy
+      # RFC-001 v2 — engine-svc routes predicts through the registry. Wait for
+      # the registry to be healthy AND for the first engine to have self-
+      # registered (otherwise we race a 503 "no active engines" on early Runs).
+      engine-registry-svc:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      artifacts-init:
+        condition: service_completed_successfully
+
+  # ── 4 hidden-slice services (§§ 1-6 from design_doc) ────────────────
+  # These were code-complete but not deployed in earlier slices. Now in compose
+  # so the BFF's TCO / scenario / engine-registry / ingest endpoints stop
+  # returning 502 in real deployments. They remain optional — failures degrade
+  # gracefully via BFF's safe() wrapper.
+  engine-registry-svc:
+    restart: unless-stopped
+    build:
+      # RFC-001 v2 — needs shared/engine_contracts. Build from repo root.
+      context: .
+      dockerfile: services/engine-registry-svc/Dockerfile
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+      # Astra-sim cycle-accurate path: TP=8 PP=8 takes ~52s, TP=16 PP=8 can
+      # hit 60–90s. 180s gives a 2× margin against the longest realistic
+      # predict. Surrogate predict is sub-second so this ceiling never bites
+      # surrogate-only paths.
+      ENGINE_PREDICT_TIMEOUT_S: "180"
+      # Sweep window — once astra-sim's predict moved off the event loop
+      # (asyncio.to_thread) the heartbeat is no longer blocked, so 240s is
+      # plenty even for the longest TP=16 PP=8 run.
+      ENGINE_REGISTRY_STALE_S: "240"
+    ports:
+      - "8089:8089"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Engines self-register on boot (RFC-001 v2 §2.6); compose doesn't gate
+      # registry on engine readiness — engines retry register every 5s until
+      # registry is up. Anti-pattern would be circular healthcheck.
+
+  # astra-sim wrapper — analytical congestion-unaware backend, vendored at
+  # engine/astra-sim. Heavy multi-stage build (≈ 10–15 min cold cache) because
+  # we compile abseil + protobuf + astra-sim from source; subsequent layers
+  # cache. Listens on :8092.
+  astra-sim-svc:
+    restart: unless-stopped
+    build:
+      # Build context is repo root because the Dockerfile needs both
+      # services/astra-sim-svc/{app,requirements.lock}, engine/astra-sim,
+      # AND shared/{engine_contracts,engine_runtime}.
+      context: .
+      dockerfile: services/astra-sim-svc/Dockerfile
+    environment:
+      ENGINE_REGISTRY_URL: "http://engine-registry-svc:8089"
+      # No subprocess-level timeout — the wrapper now uses asyncio subprocess
+      # and propagates HTTP cancellation (engine-svc httpx 180s →
+      # CancelledError → SIGTERM/SIGKILL the binary). Single source of truth
+      # for "max simulation time" lives at the engine-svc client layer.
+    volumes:
+      # RFC-003 — chakra trace cache survives restarts; encoding ETs is cheap
+      # but redundant work piles up across e2e + smoke runs.
+      - chakra-cache:/var/cache/bytesim/chakra
+    ports:
+      - "8092:8092"
+
+  tco-engine-svc:
+    restart: unless-stopped
+    build:
+      context: ./services/tco-engine-svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingest-svc:
+    restart: unless-stopped
+    build:
+      context: ./services/ingest-svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+      INGEST_STORAGE_ROOT: "/ingest"
+    ports:
+      - "8091:8091"
+    volumes:
+      - ingest-data:/ingest
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bff:
+    restart: unless-stopped
+    build:
+      context: ./services/bff
+    environment:
+      RUN_SVC_URL: "http://run-svc:8081"
+      ASSET_SVC_URL: "http://asset-svc:8082"
+      ENGINE_SVC_URL: "http://engine-svc:8087"
+      ENGINE_REGISTRY_URL: "http://engine-registry-svc:8089"
+      TCO_SVC_URL: "http://tco-engine-svc:8090"
+      INGEST_SVC_URL: "http://ingest-svc:8091"
+      KAFKA_BOOTSTRAP: "redpanda:9092"
+      LISTEN_PORT: "8080"
+      # Dev opt-ins. Production deployments must export BFF_JWT_SECRET and
+      # BFF_CORS_ORIGINS explicitly and remove these two lines.
+      BFF_ALLOW_DEV_SECRET: "1"
+      BFF_ALLOW_DEV_CORS: "1"
+    ports:
+      - "8080:8080"
+    depends_on:
+      run-svc:
+        condition: service_healthy
+      asset-svc:
+        condition: service_healthy
+      engine-svc:
+        condition: service_healthy
+      engine-registry-svc:
+        condition: service_healthy
+      tco-engine-svc:
+        condition: service_healthy
+      ingest-svc:
+        condition: service_healthy
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_BFF_URL: "http://bff:8080"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+    command: sh -c "npm install --no-fund --no-audit && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  pgdata:
+  rpdata:
+  ingest-data:
+  chakra-cache:    # RFC-003 — astra-sim chakra trace cache

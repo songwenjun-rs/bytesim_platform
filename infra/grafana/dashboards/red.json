@@ -1,0 +1,131 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Rate (req/sec by service)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests / sec",
+      "id": 1,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "expr": "sum(rate(bytesim_requests_total[1m])) by (service)",
+        "legendFormat": "{{service}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx error rate",
+      "id": 2,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "expr": "sum(rate(bytesim_requests_total{status=~\"5..\"}[1m])) by (service)",
+        "legendFormat": "{{service}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "type": "row",
+      "title": "Duration (p50 / p95 / p99 by service)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 101,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 latency (s)",
+      "id": 3,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0 },
+        "overrides": []
+      },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(bytesim_request_duration_seconds_bucket[5m])) by (le, service))",
+        "legendFormat": "{{service}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "p99 latency (s)",
+      "id": 4,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0 },
+        "overrides": []
+      },
+      "targets": [{
+        "expr": "histogram_quantile(0.99, sum(rate(bytesim_request_duration_seconds_bucket[5m])) by (le, service))",
+        "legendFormat": "{{service}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "type": "row",
+      "title": "Per-route breakdown (BFF)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "BFF top routes by req rate",
+      "id": 5,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 },
+        "overrides": []
+      },
+      "targets": [{
+        "expr": "topk(10, sum(rate(bytesim_requests_total{service=\"bff\"}[1m])) by (route))",
+        "legendFormat": "{{route}}",
+        "refId": "A"
+      }]
+    }
+  ],
+  "schemaVersion": 39,
+  "style": "light",
+  "tags": ["bytesim"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "ByteSim · RED",
+  "uid": "bytesim-red",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,0 +1,46 @@
+/* Design tokens migrated verbatim from prototype_design.html. */
+:root {
+  --bg: #1c1c21;
+  --bg-2: #16161a;
+  --bg-3: #121216;
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.09);
+  --hairline: rgba(255, 255, 255, 0.06);
+  --hairline-2: rgba(255, 255, 255, 0.1);
+  --t1: #f5f5f7;
+  --t2: #c7c7cc;
+  --t3: #8e8e93;
+  --t4: #636366;
+  --blue: #0a84ff;
+  --blue-s: rgba(10, 132, 255, 0.14);
+  --teal: #64d2ff;
+  --teal-s: rgba(100, 210, 255, 0.14);
+  --green: #30d158;
+  --green-s: rgba(48, 209, 88, 0.14);
+  --orange: #ff9f0a;
+  --orange-s: rgba(255, 159, 10, 0.14);
+  --red: #ff453a;
+  --red-s: rgba(255, 69, 58, 0.14);
+  --yellow: #ffd60a;
+  --yellow-s: rgba(255, 214, 10, 0.14);
+  --purple: #bf5af2;
+  --purple-s: rgba(191, 90, 242, 0.14);
+  --pink: #ff375f;
+  --pink-s: rgba(255, 55, 95, 0.14);
+  --indigo: #5e5ce6;
+  --indigo-s: rgba(94, 92, 230, 0.14);
+  --glass: rgba(32, 32, 38, 0.72);
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --sh-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --sh-md: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --sh-lg: 0 18px 48px rgba(0, 0, 0, 0.45);
+  --grad-ai: linear-gradient(135deg, rgba(191, 90, 242, 0.14), rgba(10, 132, 255, 0.12));
+  --grad-brand: linear-gradient(135deg, #ff375f, #bf5af2 40%, #0a84ff);
+  --d-pad: 14px;
+  --d-gap: 14px;
+}

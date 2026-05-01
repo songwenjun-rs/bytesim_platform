@@ -1,0 +1,77 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Smoke-tests every Dockerfile so a broken image fails fast (cheaper than waiting
+# for the e2e job to time out trying to bring it up).
+#
+# astra-sim-svc is special: its multi-stage build compiles abseil + protobuf +
+# astra-sim from source (≈ 10 min on a cold runner) and parallel-building it
+# alongside the other services eats memory the GH free runner doesn't have.
+# We build it serially with full output captured + uploaded so failures are
+# debuggable without admin log access.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true   # init engine/astra-sim (top-level only)
+
+      - name: Init astra-sim analytical-path submodules
+        # astra-sim has 7 internal submodules; we only need the 5 analytical
+        # ones — ns-3 and csg-htsim are huge and unused by astra-sim-svc.
+        run: |
+          git -C engine/astra-sim submodule update --init -- \
+            extern/graph_frontend/chakra \
+            extern/network_backend/analytical \
+            extern/remote_memory_backend/analytical \
+            extern/helper/fmt \
+            extern/helper/spdlog
+
+      - name: Free disk space
+        # astra-sim builder layer is heavy. Drop the unused .NET / Haskell
+        # caches the same way the e2e job does so we don't OOD mid-build.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h | head -5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build lightweight services in parallel
+        run: |
+          docker compose build --parallel \
+            run-svc asset-svc surrogate-svc \
+            engine-svc engine-registry-svc \
+            tco-engine-svc ingest-svc bff
+          df -h | head -5
+
+      - name: Build astra-sim-svc (heavy, serial)
+        id: astra-build
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/build-logs
+          docker compose build astra-sim-svc 2>&1 \
+            | tee /tmp/build-logs/astra-sim-svc.log
+          echo "── exit: $? ──" >> /tmp/build-logs/astra-sim-svc.log
+
+      - name: Upload astra-sim build log on failure
+        if: failure() && steps.astra-build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-sim-build-log
+          path: /tmp/build-logs/
+          retention-days: 7
+
+      - name: List built images
+        if: always()
+        run: |
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}' \
+            | grep -E 'bytesim|run-svc|asset-svc|bff|engine|surrogate|tco|ingest|astra' \
+            || true

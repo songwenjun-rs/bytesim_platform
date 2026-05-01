@@ -1,0 +1,50 @@
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Bumped from 25 → 50 because docker compose up --build now compiles
+    # astra-sim from source (abseil + protobuf + astra-sim ≈ 10-15 min) on
+    # a cold runner. The actual e2e steps still run in < 5 min once the
+    # stack is healthy.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true   # init engine/astra-sim (top-level only)
+
+      - name: Init astra-sim analytical-path submodules
+        # astra-sim has 7 internal submodules; we only need the 5 analytical
+        # ones — ns-3 and csg-htsim are huge and unused by astra-sim-svc.
+        run: |
+          git -C engine/astra-sim submodule update --init -- \
+            extern/graph_frontend/chakra \
+            extern/network_backend/analytical \
+            extern/remote_memory_backend/analytical \
+            extern/helper/fmt \
+            extern/helper/spdlog
+
+      - name: Free disk space
+        # Compose stack pulls ~2 GB; default GH runners have ~14 GB free which
+        # is enough but tight if other steps cache. Drop the unused .NET / Haskell
+        # bundles to give us headroom.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Run e2e
+        run: bash scripts/e2e_ci.sh
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: /tmp/e2e-logs/
+          retention-days: 7

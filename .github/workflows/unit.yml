@@ -1,0 +1,126 @@
+name: unit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true   # tests/astra_sim/test_translator.py reads
+                             # engine/astra-sim/examples/workload/...
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps (locked + editable services)
+        run: |
+          python -m pip install --upgrade pip
+          # Test-only deps not declared in any service's pyproject.toml.
+          # pglast is used by tests/db/test_sql_schema.py for SQL AST parsing.
+          pip install pytest pytest-asyncio pytest-cov pgserver pglast
+
+          # Every service ships a requirements.lock (pip-compile output).
+          # Install those first so transitives are pinned + reproducible.
+          # astra-sim-svc included so chakra_writer tests (RFC-003) can import
+          # `google.protobuf` from its requirements.lock without dragging in
+          # the heavy native binary (the binary lives only in the docker image).
+          for svc in bff engine-svc surrogate-svc \
+                     tco-engine-svc engine-registry-svc ingest-svc \
+                     astra-sim-svc; do
+            if [ -f "services/$svc/requirements.lock" ]; then
+              pip install -r "services/$svc/requirements.lock"
+            fi
+          done
+
+          # Then editable-install each service so `app.*` imports resolve at
+          # the test site. --no-deps because deps are already locked.
+          # astra-sim-svc is NOT pip-installed (would conflict with bff's `app`
+          # package); per-test conftest puts services/astra-sim-svc on sys.path.
+          for svc in bff engine-svc surrogate-svc \
+                     tco-engine-svc engine-registry-svc ingest-svc; do
+            if [ -f "services/$svc/pyproject.toml" ]; then
+              pip install --no-deps -e "services/$svc" || echo "::warning::failed to install $svc"
+            fi
+          done
+          pip install -e ./sdk
+
+      - name: Pytest
+        # --cov-fail-under sets a CI floor so a PR can't silently drop
+        # coverage. Local snapshot 2026-05-01 across the 5 svc + 4 svc the
+        # CI also instruments is 77%; floor sits a few pp lower so unrelated
+        # PRs aren't blocked by drift.
+        run: |
+          pytest tests/ \
+            --tb=short --maxfail=10 \
+            --cov=services/bff/app \
+            --cov=services/engine-svc/app \
+            --cov=services/surrogate-svc/app \
+            --cov=services/tco-engine-svc/app \
+            --cov=services/engine-registry-svc/app --cov=services/ingest-svc/app \
+            --cov=sdk/bytesim \
+            --cov-fail-under=72 \
+            --cov-report=term --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
+
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        svc: [run-svc, asset-svc]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # run-svc bumped to 1.23 in Phase 0.3 (prometheus/client_golang
+          # requires it). asset-svc is still 1.22 but 1.23 is backward-compat.
+          go-version: "1.23"
+          cache-dependency-path: services/${{ matrix.svc }}/go.sum
+
+      - name: Test
+        working-directory: services/${{ matrix.svc }}
+        run: |
+          go mod download
+          go test -race -cover ./...
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        working-directory: web
+        run: npx vitest run --coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage
+          path: web/coverage/

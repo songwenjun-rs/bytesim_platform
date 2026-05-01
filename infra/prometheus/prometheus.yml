@@ -1,0 +1,52 @@
+# ByteSim Prometheus scrape config.
+# Phase 0.3: 3 services instrumented (BFF + engine-svc + run-svc).
+# The other services will land in Phase 1 when we extract _obs to a shared
+# package — until then they're listed below as commented-out entries that the
+# operator can enable by uncommenting after instrumenting their main.py.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    platform: bytesim
+    env: dev
+
+scrape_configs:
+  - job_name: bff
+    metrics_path: /metrics
+    static_configs:
+      - targets: [bff:8080]
+        labels:
+          service: bff
+
+  - job_name: engine-svc
+    metrics_path: /metrics
+    static_configs:
+      - targets: [engine-svc:8087]
+        labels:
+          service: engine-svc
+
+  - job_name: run-svc
+    metrics_path: /metrics
+    static_configs:
+      - targets: [run-svc:8081]
+        labels:
+          service: run-svc
+
+  # Phase 1 rollout — uncomment after wiring _obs.py into each main.py.
+  # - job_name: asset-svc
+  #   static_configs: [{targets: [asset-svc:8082]}]
+  # - job_name: surrogate-svc
+  #   static_configs: [{targets: [surrogate-svc:8083]}]
+  # - job_name: tuner-svc
+  #   static_configs: [{targets: [tuner-svc:8084]}]
+  # - job_name: calibration-svc
+  #   static_configs: [{targets: [calibration-svc:8085]}]
+  # - job_name: scenario-svc
+  #   static_configs: [{targets: [scenario-svc:8088]}]
+  # - job_name: engine-registry-svc
+  #   static_configs: [{targets: [engine-registry-svc:8089]}]
+  # - job_name: tco-engine-svc
+  #   static_configs: [{targets: [tco-engine-svc:8090]}]
+  # - job_name: ingest-svc
+  #   static_configs: [{targets: [ingest-svc:8091]}]

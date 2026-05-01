@@ -1,0 +1,5 @@
+021 deletes bootstrap rows AND drops v1 columns. A faithful down would have
+to re-insert the surrogate-analytical / astra-sim rows AND re-add the v1
+columns + populate them from the v2 envelope — neither is purely structural.
+The forward script is the cutover; rollback is "deploy v1 image again from
+the prior release tag". (See infra/postgres/down/README.md rule #4.)

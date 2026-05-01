@@ -1,0 +1,71 @@
+# astra-sim-svc, surrogate-svc, and engine-registry-svc use `context: .`
+# (repo root) — RFC-001 v2 makes them depend on shared/engine_contracts +
+# shared/engine_runtime which live outside services/. Without this file,
+# buildkit would ship the full 500MB+ working tree to every build, slowing
+# CI hugely and risking OOM. Other services use a per-svc context so they're
+# already small; this just keeps repo-root context minimal.
+
+# Git metadata
+.git
+.gitignore
+
+# Test infra not needed in any service image
+.venv-test
+.venv*
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+tests
+docs
+README.md
+
+# Web frontend (built by node:20-alpine container, not via Docker build)
+web/node_modules
+web/dist
+web/coverage
+web/tsconfig.tsbuildinfo
+
+# Per-service builds carry their own context; the services that use
+# `context: .` (astra-sim-svc, surrogate-svc, engine-registry-svc) consume
+# engine/astra-sim, shared/, and their own services/<svc>/ subtree. Strip
+# everything else from root context.
+infra/artifacts
+infra/postgres
+docker-compose.yml
+docker-compose.observability.yml
+Makefile
+sdk
+scripts
+
+# astra-sim's own build artifacts (the wrapper Dockerfile compiles fresh)
+engine/astra-sim/build/astra_*/build/
+engine/astra-sim/build/astra_*/lib/
+
+# Skip the network backends we don't ship (analytical-only)
+engine/astra-sim/extern/network_backend/ns-3
+engine/astra-sim/extern/network_backend/csg-htsim
+
+# Editor / OS
+.idea
+.vscode
+*.swp
+.DS_Store
+
+# Other services' source — astra-sim-svc only needs engine/ + services/astra-sim-svc/
+# (we keep the others reachable for the per-svc contexts but they're listed
+# explicitly here for clarity).
+#
+# RFC-001 v2 — surrogate-svc and engine-registry-svc are now also context:.
+# (they need shared/), so they CANNOT be excluded here. Removed from the list.
+services/run-svc
+services/asset-svc
+services/realtime-svc
+services/tuner-svc
+services/calibration-svc
+services/mcp-svc
+services/engine-svc
+services/tco-engine-svc
+services/ingest-svc
+services/scenario-svc
+services/bff

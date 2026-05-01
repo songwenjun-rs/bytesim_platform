@@ -1,0 +1,53 @@
+# Observability sidecar stack — opt-in.  Run alongside the main compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# or via:  make obs-up
+#
+# Prometheus scrapes the bytesim_* metrics every 5s from BFF, engine-svc,
+# and run-svc.  Grafana is pre-provisioned with the Prometheus
+# datasource + the "RED" dashboard (rate / error / duration per service).
+# Anonymous viewer access is enabled so localhost:3000 just works.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: bytesim-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: bytesim-grafana
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Editor"
+      GF_AUTH_ANONYMOUS_ORG_NAME: "ByteSim"
+      GF_USERS_DEFAULT_THEME: "light"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+volumes:
+  prometheus-data:
+  grafana-data:

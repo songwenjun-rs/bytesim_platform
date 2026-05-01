@@ -1,0 +1,117 @@
+name: playwright
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Brings up the full docker compose stack (same path e2e.yml uses) and runs
+# Playwright critical-path specs against it. Kept as a separate workflow from
+# e2e.yml because:
+#   - e2e.yml validates the engine-svc → run-svc → astra-sim pipeline (deep
+#     backend integration), tested via curl/scripts.
+#   - playwright.yml validates the SPA flows visible to architects (Dashboard,
+#     Topology, TrainingSim, Reports, Catalog), tested through a real browser.
+# Some overlap with e2e.yml's stack-up, but separation lets us flake-debug
+# UI tests without re-running the full astra-sim build.
+
+jobs:
+  e2e-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50  # docker compose up cold-builds astra-sim (~10-15 min)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Init astra-sim analytical-path submodules
+        run: |
+          git -C engine/astra-sim submodule update --init -- \
+            extern/graph_frontend/chakra \
+            extern/network_backend/analytical \
+            extern/remote_memory_backend/analytical \
+            extern/helper/fmt \
+            extern/helper/spdlog
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Bring up stack
+        run: |
+          docker compose up -d --build
+          # Wait until BFF is healthy. Healthcheck takes ~30 s normally but on
+          # cold runners with parallel container startup it can drift longer.
+          for i in $(seq 1 60); do
+            status=$(docker compose ps --format json bff 2>/dev/null \
+                       | jq -r 'select(. != null) | .Health // .Status' | head -1)
+            echo "[wait $i] bff = $status"
+            case "$status" in healthy*) break;; esac
+            sleep 5
+          done
+          docker compose ps
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install playwright in a sibling dir
+        # Playwright runs on the host but the SPA is served by the running
+        # web container (which itself binds web/node_modules from the mount).
+        # Installing into web/node_modules on the host would either EACCES
+        # against the container's root-owned tree or wipe it (breaking the
+        # running vite). Use a sibling dir that copies just package.json +
+        # lock + the e2e/ + playwright.config.ts files we actually need.
+        run: |
+          mkdir -p /tmp/playwright-host
+          cp web/package.json web/package-lock.json /tmp/playwright-host/
+          cp web/playwright.config.ts /tmp/playwright-host/
+          cp -r web/e2e /tmp/playwright-host/
+          cd /tmp/playwright-host
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Seed minimal e2e data
+        # Two runs + a couple of catalog parts so the report-compare spec
+        # has something to multi-select. Idempotent — uses ON CONFLICT path
+        # of the bs_catalog seed migration.
+        run: |
+          # bring back the seeded catalog if a prior step truncated it
+          docker compose exec -T postgres psql -U bytesim -d bytesim \
+            -f /docker-entrypoint-initdb.d/024_catalog.sql || true
+          # Ensure at least an empty hwspec exists so 集群配置 loads
+          docker compose exec -T postgres psql -U bytesim -d bytesim -c "
+            INSERT INTO bs_spec (id, kind, name, project_id, latest_hash) VALUES
+              ('hwspec_topo_b1','hwspec','topo-bj1','p_default',
+               'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+            ON CONFLICT (id) DO NOTHING;
+            INSERT INTO bs_spec_version (hash, spec_id, parent_hash, version_tag, body) VALUES
+              ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','hwspec_topo_b1',NULL,'v1',
+               '{\"datacenter\":{\"id\":\"dc-default\",\"name\":\"默认数据中心\",\"clusters\":[],\"scale_out_fabrics\":[]},\"server_templates\":[]}'::jsonb)
+            ON CONFLICT (hash) DO NOTHING;
+          "
+
+      - name: Run Playwright
+        working-directory: /tmp/playwright-host
+        env:
+          # Web container exposes 5173; the SPA proxies /v1 → bff:8080 internally.
+          BASE_URL: http://localhost:5173
+        run: npx playwright test --reporter=github
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            /tmp/playwright-host/playwright-report/
+            /tmp/playwright-host/test-results/
+          retention-days: 7
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --tail=200

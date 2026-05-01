@@ -1,0 +1,3 @@
+[submodule "engine/astra-sim"]
+	path = engine/astra-sim
+	url = https://github.com/astra-sim/astra-sim.git
