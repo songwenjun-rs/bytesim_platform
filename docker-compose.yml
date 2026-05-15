@@ -53,6 +53,9 @@ services:
       context: ./service/surrogate_svc
     environment:
       ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+      # Address that engine_registry_svc uses to reach this engine when
+      # routing /v1/predict — must match the compose service name + port.
+      ENGINE_SELF_URL: "http://surrogate_svc:8083"
       # Phase 2 — pull GPU profile (peak_mfu, nvlink_domain, FP4 support)
       # from bs_catalog at startup so users can register new SKUs without
       # a new surrogate_svc image. Falls back to in-code baseline if down.
@@ -123,6 +126,9 @@ services:
       context: ./service/bytesim_svc
     environment:
       ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+      # Address that engine_registry_svc uses to reach this engine when
+      # routing /v1/predict — must match the compose service name + port.
+      ENGINE_SELF_URL: "http://bytesim_svc:8083"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
       start_period: 20s
