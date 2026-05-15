@@ -17,6 +17,10 @@ tests/_cov_html_python/
 .venv*/
 venv/
 env/
+# Exception: deploy-time env files (committed, no secrets) for the local
+# cross-host simulation. The blanket env/ rule above otherwise eats them.
+!deploy/local-cross-host/env/
+!deploy/local-cross-host/env/*
 .python-version
 *.egg
 
