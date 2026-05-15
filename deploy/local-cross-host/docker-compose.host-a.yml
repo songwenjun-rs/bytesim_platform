@@ -23,6 +23,11 @@ services:
       - ../../dashboard/output/dist:/opt/tiger/bytesim/web:ro
       # Reverse-proxy config template — entrypoint will envsubst at start
       - ../../dashboard/output/nginx.conf:/etc/nginx/templates/bytesim.conf.template:ro
+      # nginx:alpine ships a default.conf with `server_name localhost`
+      # which wins over our `server_name _` for any request to
+      # http://localhost:8443/. Shadow it with /dev/null so our config
+      # is the only server block on port 80.
+      - /dev/null:/etc/nginx/conf.d/default.conf:ro
     # nginx:alpine reads /etc/nginx/templates/*.template, envsubst's
     # them into /etc/nginx/conf.d/. Default nginx.conf only includes
     # /etc/nginx/conf.d/*.conf, so the template rendering is automatic.

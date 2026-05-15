@@ -43,12 +43,8 @@ services:
     env_file: ./env/host-c.env
     ports:
       - "18081:8081"        # exposed to other "hosts"
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+    # Healthcheck is inherited from the Dockerfile (uses /healthcheck binary
+    # at image root — this is a distroless image with no shell or PATH).
 
 volumes:
   postgres_data:
