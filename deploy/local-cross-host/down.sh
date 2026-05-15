@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Tear down everything started by up.sh.
-# Use --volumes to also drop the postgres data volume.
+#
+# Postgres uses the EXTERNAL volume bytesim_platform_pgdata (shared with the
+# main docker-compose.yml dev stack), so even `--clean` does NOT wipe it.
+# To actually delete that volume, do it explicitly with:
+#   docker volume rm bytesim_platform_pgdata
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -8,10 +12,14 @@ cd "$(dirname "$0")"
 CLEAN=""
 [[ "${1:-}" == "--clean" ]] && CLEAN="--volumes"
 
-# Reverse order doesn't actually matter (compose stops cleanly either way).
+# Tear down in reverse-of-up order (not strictly required; compose handles it).
 for f in docker-compose.host-a.yml docker-compose.host-b.yml \
-         docker-compose.host-d.yml docker-compose.host-c.yml; do
+         docker-compose.host-d.yml docker-compose.host-c.yml \
+         docker-compose.postgres.yml; do
   docker compose -f "$f" down $CLEAN 2>/dev/null || true
 done
 
-echo "done. (pass --clean to also wipe postgres data volume)"
+echo "done."
+echo "  --clean removes the host-c local volume (none with the new layout)."
+echo "  External volume bytesim_platform_pgdata is preserved — wipe it"
+echo "  explicitly with \`docker volume rm bytesim_platform_pgdata\` if needed."

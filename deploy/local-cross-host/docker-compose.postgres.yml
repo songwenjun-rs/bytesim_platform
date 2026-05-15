@@ -1,0 +1,39 @@
+# Standalone Postgres — runs independently of any "host" tier.
+# Other services reach it through host.docker.internal:15432 (same as they
+# would reach an external/managed PG in production).
+#
+# Uses an EXTERNAL volume (bytesim_platform_pgdata, populated by the main
+# docker-compose.yml in previous dev sessions). This gives the dashboard
+# the real specs / runs / templates / reports you've accumulated.
+#
+# Quick access from host machine:
+#   psql -h localhost -p 15432 -U bytesim -d bytesim
+#   (password: bytesim)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cross-host-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bytesim
+      POSTGRES_PASSWORD: bytesim
+      POSTGRES_DB: bytesim
+    ports:
+      - "15432:5432"
+    volumes:
+      - bytesim_platform_pgdata:/var/lib/postgresql/data
+      # init scripts only run on a FRESH volume; harmless when the
+      # external volume already has data.
+      - ../../service/data_svc/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bytesim -d bytesim"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  bytesim_platform_pgdata:
+    external: true
+    name: bytesim_platform_pgdata
