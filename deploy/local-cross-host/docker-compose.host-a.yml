@@ -1,0 +1,28 @@
+# Host A — edge nginx + dashboard SPA
+# This is the only "host" with a public-ish port. Serves dist/ statics and
+# reverse-proxies /v1/* (HTTP) + WS to bff on host B (via host-exposed
+# port 18080).
+
+networks:
+  host-a-net:
+    driver: bridge
+
+services:
+  dashboard_nginx:
+    image: nginx:1.27-alpine
+    container_name: cross-host-dashboard-nginx
+    restart: unless-stopped
+    networks: [host-a-net]
+    environment:
+      # host-exposed port of host B's bff. envsubst rewrites nginx.conf.
+      BFF_UPSTREAM: host.docker.internal:18080
+    ports:
+      - "8443:80"           # the only "public" entry to the system
+    volumes:
+      # Static SPA
+      - ../../dashboard/output/dist:/opt/tiger/bytesim/web:ro
+      # Reverse-proxy config template — entrypoint will envsubst at start
+      - ../../dashboard/output/nginx.conf:/etc/nginx/templates/bytesim.conf.template:ro
+    # nginx:alpine reads /etc/nginx/templates/*.template, envsubst's
+    # them into /etc/nginx/conf.d/. Default nginx.conf only includes
+    # /etc/nginx/conf.d/*.conf, so the template rendering is automatic.

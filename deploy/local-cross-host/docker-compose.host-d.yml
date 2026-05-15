@@ -1,0 +1,76 @@
+# Host D — engines + orchestrator + registry + TCO
+# bytesim_svc is OMITTED because its build requires external engine assets
+# (engine/bytesim/synverse/src etc.) not present in this dev environment.
+# Add it back if/when those assets are populated.
+#
+# surrogate_svc default port 8083 is exposed as 18083 on the host.
+
+networks:
+  host-d-net:
+    driver: bridge
+
+services:
+  engine_registry_svc:
+    build:
+      context: ../../service/engine_registry_svc
+    image: cross-host-engine-registry-svc:dev
+    container_name: cross-host-engine-registry-svc
+    restart: unless-stopped
+    networks: [host-d-net]
+    env_file: ./env/host-d.env
+    environment:
+      # registry connects to PG on "host C"
+      BYTESIM_PG_DSN: postgres://bytesim:bytesim@host.docker.internal:15432/bytesim
+    ports:
+      - "18089:8089"
+
+  surrogate_svc:
+    build:
+      context: ../../service/surrogate_svc
+    image: cross-host-surrogate-svc:dev
+    container_name: cross-host-surrogate-svc
+    restart: unless-stopped
+    networks: [host-d-net]
+    env_file: ./env/host-d.env
+    environment:
+      ENGINE_REGISTRY_URL: http://host.docker.internal:18089
+      ASSET_SVC_URL:       http://host.docker.internal:18081
+      # critical: the URL the registry uses to reach this engine.
+      # Must point back at the host-exposed port (18083), not the
+      # in-container 8083 (registry isn't on this bridge).
+      ENGINE_SELF_URL:     http://host.docker.internal:18083
+    ports:
+      - "18083:8083"
+    depends_on:
+      - engine_registry_svc
+
+  tco_engine_svc:
+    build:
+      context: ../../service/tco_engine_svc
+    image: cross-host-tco-engine-svc:dev
+    container_name: cross-host-tco-engine-svc
+    restart: unless-stopped
+    networks: [host-d-net]
+    env_file: ./env/host-d.env
+    environment:
+      BYTESIM_PG_DSN: postgres://bytesim:bytesim@host.docker.internal:15432/bytesim
+    ports:
+      - "18090:8090"
+
+  engine_svc:
+    build:
+      context: ../../service/engine_svc
+    image: cross-host-engine-svc:dev
+    container_name: cross-host-engine-svc
+    restart: unless-stopped
+    networks: [host-d-net]
+    env_file: ./env/host-d.env
+    environment:
+      RUN_SVC_URL:         http://host.docker.internal:18081
+      ENGINE_REGISTRY_URL: http://host.docker.internal:18089
+      TCO_SVC_URL:         http://host.docker.internal:18090
+    ports:
+      - "18087:8087"
+    depends_on:
+      - engine_registry_svc
+      - tco_engine_svc

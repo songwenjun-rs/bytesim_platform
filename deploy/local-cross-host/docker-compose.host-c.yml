@@ -1,0 +1,54 @@
+# Host C — data tier + Postgres
+# Network: isolated bridge `host-c-net`. Other "hosts" reach this tier via
+# host.docker.internal:<published-port>, NOT docker service-name DNS —
+# simulates real cross-machine communication where each box's network
+# namespace is independent.
+
+networks:
+  host-c-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cross-host-postgres
+    restart: unless-stopped
+    networks: [host-c-net]
+    environment:
+      POSTGRES_USER: bytesim
+      POSTGRES_PASSWORD: bytesim
+      POSTGRES_DB: bytesim
+    ports:
+      - "15432:5432"        # exposed to other "hosts"
+    volumes:
+      - ../../service/data_svc/migrations:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bytesim -d bytesim"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  data_svc:
+    build:
+      context: ../../service/data_svc
+    image: cross-host-data-svc:dev
+    container_name: cross-host-data-svc
+    restart: unless-stopped
+    networks: [host-c-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: ./env/host-c.env
+    ports:
+      - "18081:8081"        # exposed to other "hosts"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  postgres_data:
