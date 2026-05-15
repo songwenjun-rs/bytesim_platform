@@ -16,23 +16,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-_TIER = {
-    "bff":                 "gateway",
-    "data_svc":            "backend",
-    "engine_svc":          "backend",
-    "engine_registry_svc": "backend",
-    "surrogate_svc":       "backend",
-    "bytesim_svc":         "backend",
-    "tco_engine_svc":      "backend",
-    "web":                 "frontend",
+# Post-restructure layout (May 2026): top-level dirs for the SPA + gateway,
+# `service/` parent for the 6 backend Python/Go services.
+_PATH = {
+    "bff":                 "bff",
+    "dashboard":           "dashboard",
+    "web":                 "dashboard",   # legacy alias
+    "data_svc":            "service/data_svc",
+    "engine_svc":          "service/engine_svc",
+    "engine_registry_svc": "service/engine_registry_svc",
+    "surrogate_svc":       "service/surrogate_svc",
+    "bytesim_svc":         "service/bytesim_svc",
+    "tco_engine_svc":      "service/tco_engine_svc",
 }
 
 
 def svc_path(root: str | os.PathLike, svc: str) -> str:
-    """Return the post-split path for `<root>/<tier>/<svc>/`."""
-    return os.path.join(str(root), _TIER[svc], svc)
+    """Return the post-restructure path for the service's submodule root."""
+    return os.path.join(str(root), _PATH[svc])
 
 
 def svc_path_p(root: Path, svc: str) -> Path:
     """Path-flavoured variant for tests that work with pathlib.Path."""
-    return Path(root) / _TIER[svc] / svc
+    return Path(root) / _PATH[svc]

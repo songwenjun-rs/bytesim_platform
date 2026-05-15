@@ -63,7 +63,8 @@ class TestEnvelopeSchema:
 
     def test_realistic_narrow_envelope_validates(self) -> None:
         env = _narrow_envelope()
-        assert env.parallelism.PP == (1, 1)
+        # Pydantic V2 deserialises OpenAPI arrays as list, not tuple.
+        assert list(env.parallelism.PP) == [1, 1]
 
     def test_inverted_parallelism_interval_rejected(self) -> None:
         # Phase 1 split: JSON Schema can't express `lo <= hi`, so this check

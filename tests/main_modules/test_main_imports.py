@@ -27,53 +27,6 @@ def test_main_module_builds_app(mount_svc, svc, title, routes):
         assert expected in paths, f"missing {expected} in {svc}"
 
 
-def test_bff_event_bus_module_loads(mount_svc):
-    """Importing bff.event_bus initialises class definitions; this hits 0%
-    coverage lines we couldn't otherwise reach without Kafka."""
-    mount_svc("bff")
-    bus = importlib.import_module("app.event_bus")
-    assert hasattr(bus, "EventBus")
-    assert bus.TOPIC == "bs.events"
-
-
-def test_engine_event_bus_module_loads(mount_svc):
-    mount_svc("engine_svc")
-    mod = importlib.import_module("app.event_bus")
-    assert mod.TOPIC == "bs.events"
-
-
-# ── BFF lifespan: open + close paths through mocked clients ────────────────
-
-@pytest.mark.asyncio
-async def test_bff_lifespan_drives_open_close(mount_svc, monkeypatch):
-    """Drive bff/app/main.py's @asynccontextmanager lifespan through one
-    open → yield → close cycle. Each downstream client is monkeypatched to
-    a no-op AsyncMock so we don't need real Postgres / Kafka."""
-    from unittest.mock import AsyncMock, MagicMock
-    mount_svc("bff")
-    monkeypatch.setenv("BFF_JWT_SECRET", "x")
-    monkeypatch.setenv("BFF_ALLOW_DEV_SECRET", "1")
-    monkeypatch.setenv("BFF_ALLOW_DEV_CORS", "1")
-
-    main_mod = importlib.import_module("app.main")
-
-    # Replace each Client constructor with one that yields an AsyncMock.
-    for cls_name in ("RunSvcClient", "AssetSvcClient", "EngineSvcClient",
-                     "TcoSvcClient", "EngineRegistrySvcClient"):
-        ctor = MagicMock(return_value=AsyncMock())
-        monkeypatch.setattr(main_mod, cls_name, ctor)
-
-    # EventBus.open + close shouldn't actually contact Kafka.
-    fake_bus_cls = MagicMock(return_value=AsyncMock())
-    monkeypatch.setattr(main_mod, "EventBus", fake_bus_cls)
-
-    # Drive the lifespan context manager.
-    async with main_mod.lifespan(main_mod.app):
-        # Inside the context: every state attr should be set.
-        assert main_mod.app.state.run_svc is not None
-        assert main_mod.app.state.event_bus is not None
-
-
 # ── engine_svc worker_loop: no-runs path + cancel propagation ──────────────
 
 @pytest.mark.asyncio

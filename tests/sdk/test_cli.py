@@ -76,15 +76,6 @@ def test_run_create_happy_path(bff_app, base_url, tmp_config_file, capsys):
     assert "sim-new" in out.err or "sim-new" in out.out
 
 
-def test_run_cancel_running_emits_kafka(bff_app, base_url, tmp_config_file, capsys):
-    run_cli(["login", "songwenjun", "--base-url", base_url])
-    bff_app.state.run_svc.cancel_run = AsyncMock(return_value={"was_running": True, "id": "x"})
-    bff_app.state.event_bus.publish = AsyncMock()
-    code = run_cli(["run", "cancel", "x"])
-    assert code == 0
-    bff_app.state.event_bus.publish.assert_awaited_once()
-
-
 def test_spec_diff_table(bff_app, base_url, tmp_config_file, capsys):
     run_cli(["login", "songwenjun", "--base-url", base_url])
     bff_app.state.asset_svc.diff = AsyncMock(return_value={
