@@ -1,0 +1,18 @@
+[project]
+name = "bytesim"
+version = "0.1.0"
+description = "ByteSim platform SDK + CLI — internal AI Infra simulation platform client"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+]
+
+[project.scripts]
+bytesim = "bytesim.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bytesim"]

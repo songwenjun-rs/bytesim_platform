@@ -1,0 +1,186 @@
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bytesim
+      POSTGRES_PASSWORD: bytesim
+      POSTGRES_DB: bytesim
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./service/data_svc/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP probe rather than the Unix socket the
+      # init scripts use during the first-pass startup. Otherwise pg_isready
+      # passes during the init phase, deps start, then PG restarts to bind
+      # TCP — racing the deps into "connection refused" before they retry.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bytesim -d bytesim"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # P2.3 retired Kafka/Redpanda — engine_svc polls bs_run.status at stage
+  # boundaries for cancel propagation; bs_run_event captures lifecycle.
+  # No external bus needed.
+
+  # Phase 2 cutover — artifact content now lives in bs_artifact.content
+  # (PG JSONB). The legacy artifacts-init busybox bootstrap + bind-mounted
+  # /artifacts volume + ARTIFACTS_DIR env are gone. data_svc and engine_svc
+  # can now run on separate nodes / pods (no shared filesystem).
+
+  # data_svc: merged Go service (former run_svc + asset-svc). Single binary
+  # serves /v1/runs/... + /v1/specs/... + /v1/catalog/... + artifact upload
+  # at :8081.
+  data_svc:
+    restart: unless-stopped
+    build:
+      context: ./service/data_svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim?sslmode=disable"
+      LISTEN_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  surrogate_svc:
+    restart: unless-stopped
+    build:
+      context: ./service/surrogate_svc
+    environment:
+      ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+      # Phase 2 — pull GPU profile (peak_mfu, nvlink_domain, FP4 support)
+      # from bs_catalog at startup so users can register new SKUs without
+      # a new surrogate_svc image. Falls back to in-code baseline if down.
+      ASSET_SVC_URL: "http://data_svc:8081"
+    ports:
+      - "8083:8083"
+
+  engine_svc:
+    restart: unless-stopped
+    build:
+      context: ./service/engine_svc
+    environment:
+      RUN_SVC_URL: "http://data_svc:8081"
+      # RFC-001 v2 — engine_svc/clients.py:predict ships the {payload: ...}
+      # registry envelope shape; without ENGINE_REGISTRY_URL it falls back
+      # to SURROGATE_URL and posts the envelope directly to surrogate, which
+      # rejects the wrapper as invalid EnginePredictRequest (422). Setting
+      # the registry URL is the v2 happy path.
+      ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+      SURROGATE_URL: "http://surrogate_svc:8083"
+      TCO_SVC_URL: "http://tco_engine_svc:8090"
+      POLL_INTERVAL_S: "2"
+    ports:
+      - "8087:8087"
+    depends_on:
+      data_svc:
+        condition: service_healthy
+      surrogate_svc:
+        condition: service_healthy
+      # RFC-001 v2 — engine_svc routes predicts through the registry. Wait for
+      # the registry to be healthy AND for the first engine to have self-
+      # registered (otherwise we race a 503 "no active engines" on early Runs).
+      engine_registry_svc:
+        condition: service_healthy
+
+  # ── hidden-slice services (§§ 1-6 from design_doc) ────────────────
+  # These were code-complete but not deployed in earlier slices. Now in compose
+  # so the BFF's TCO / engine-registry endpoints stop returning 502 in real
+  # deployments. They remain optional — failures degrade gracefully via BFF's
+  # safe() wrapper.
+  engine_registry_svc:
+    restart: unless-stopped
+    build:
+      context: ./service/engine_registry_svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+      # Surrogate predict is sub-second; the 180s ceiling is headroom for
+      # any future heavier engine plugin. Doesn't bite analytical paths.
+      ENGINE_PREDICT_TIMEOUT_S: "180"
+      # Heartbeat staleness window — engine offline after this many seconds.
+      ENGINE_REGISTRY_STALE_S: "240"
+    ports:
+      - "8089:8089"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Engines self-register on boot (RFC-001 v2 §2.6); compose doesn't gate
+      # registry on engine readiness — engines retry register every 5s until
+      # registry is up. Anti-pattern would be circular healthcheck.
+
+  # bytesim wrapper — GPU cluster simulation via ByteSim simulation scripts
+  # (run_sim.py / run_sim_m12.py / run_sim_mlsys_dit.py). Listens on :8083.
+  bytesim_svc:
+    restart: unless-stopped
+    build:
+      # Phase 3 collapsed engine/bytesim/ into the bytesim_svc repo, so the
+      # build context is now just the sibling repo.
+      context: ./service/bytesim_svc
+    environment:
+      ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "8086:8083"
+
+  tco_engine_svc:
+    restart: unless-stopped
+    build:
+      context: ./service/tco_engine_svc
+    environment:
+      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bff:
+    restart: unless-stopped
+    build:
+      context: ./bff
+    environment:
+      RUN_SVC_URL: "http://data_svc:8081"
+      ASSET_SVC_URL: "http://data_svc:8081"
+      ENGINE_SVC_URL: "http://engine_svc:8087"
+      ENGINE_REGISTRY_URL: "http://engine_registry_svc:8089"
+      TCO_SVC_URL: "http://tco_engine_svc:8090"
+      LISTEN_PORT: "8080"
+      # Dev opt-ins. Production deployments must export BFF_JWT_SECRET and
+      # BFF_CORS_ORIGINS explicitly and remove these two lines.
+      BFF_ALLOW_DEV_SECRET: "1"
+      BFF_ALLOW_DEV_CORS: "1"
+    ports:
+      - "8080:8080"
+    depends_on:
+      data_svc:
+        condition: service_healthy
+      engine_svc:
+        condition: service_healthy
+      engine_registry_svc:
+        condition: service_healthy
+      tco_engine_svc:
+        condition: service_healthy
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_BFF_URL: "http://bff:8080"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./dashboard:/app
+    command: sh -c "npm install --no-fund --no-audit && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  pgdata:

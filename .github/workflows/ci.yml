@@ -1,0 +1,54 @@
+name: ci
+# Platform repo is orchestration: docker-compose glue + submodule pointers.
+# Per-service tests run in their own repos via their own ci.yml; this
+# workflow only checks the glue.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        # NOT recursive — submodule content isn't needed for the checks below.
+      - name: docker compose config syntactically valid
+        run: docker compose config -q
+      - name: .gitmodules entries well-formed
+        run: |
+          python3 - <<'PY'
+          import configparser, sys
+          cp = configparser.ConfigParser()
+          cp.read('.gitmodules')
+          if not cp.sections():
+              sys.exit('no submodules declared in .gitmodules')
+          for s in cp.sections():
+              for k in ('path', 'url'):
+                  if not cp.has_option(s, k):
+                      sys.exit(f'submodule entry [{s}] missing key: {k}')
+          print(f'{len(cp.sections())} submodules declared, all well-formed')
+          PY
+      - name: submodule paths exist as gitlinks in HEAD
+        run: |
+          # Every .gitmodules entry should resolve to a 160000-mode entry in
+          # the tree. Drift here (a renamed dir, a forgotten gitlink) means
+          # `git submodule update --init` won't restore the expected layout.
+          python3 - <<'PY'
+          import configparser, subprocess, sys
+          cp = configparser.ConfigParser()
+          cp.read('.gitmodules')
+          tree = subprocess.check_output(
+              ['git', 'ls-tree', '-r', 'HEAD'], text=True
+          ).splitlines()
+          gitlinks = {line.split()[3] for line in tree if line.startswith('160000')}
+          declared = {cp.get(s, 'path') for s in cp.sections()}
+          missing = declared - gitlinks
+          extra = gitlinks - declared
+          if missing:
+              sys.exit(f'declared in .gitmodules but no gitlink in HEAD: {sorted(missing)}')
+          if extra:
+              sys.exit(f'gitlink in HEAD but not in .gitmodules: {sorted(extra)}')
+          print(f'{len(declared)} submodule gitlinks match .gitmodules')
+          PY

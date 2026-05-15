@@ -1,0 +1,27 @@
+[submodule "engine_contracts"]
+	path = engine_contracts
+	url = git@github.com:songwenjun-rs/bytesim_engine_contracts.git
+[submodule "dashboard"]
+	path = dashboard
+	url = git@github.com:songwenjun-rs/bytesim_dashboard.git
+[submodule "bff"]
+	path = bff
+	url = git@github.com:songwenjun-rs/bytesim_bff.git
+[submodule "service/data_svc"]
+	path = service/data_svc
+	url = git@github.com:songwenjun-rs/bytesim_data_svc.git
+[submodule "service/engine_svc"]
+	path = service/engine_svc
+	url = git@github.com:songwenjun-rs/bytesim_engine_svc.git
+[submodule "service/engine_registry_svc"]
+	path = service/engine_registry_svc
+	url = git@github.com:songwenjun-rs/bytesim_engine_registry_svc.git
+[submodule "service/surrogate_svc"]
+	path = service/surrogate_svc
+	url = git@github.com:songwenjun-rs/bytesim_surrogate_svc.git
+[submodule "service/bytesim_svc"]
+	path = service/bytesim_svc
+	url = git@github.com:songwenjun-rs/bytesim_svc.git
+[submodule "service/tco_engine_svc"]
+	path = service/tco_engine_svc
+	url = git@github.com:songwenjun-rs/bytesim_tco_engine_svc.git
