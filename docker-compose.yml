@@ -1,161 +1,27 @@
+# Local-dev fullstack — pulls each submodule's docker-compose.yml via
+# `include:` so this file only owns the things specific to running
+# everything on one machine:
+#   - dev-mode shortcuts for bff (skip the strong-secret + CORS gates)
+#   - `web`: Vite hot-reload SPA at :5173. Production-shape SPA is
+#     dashboard/docker-compose.yml (nginx + baked dist/).
+#
+# For cross-host deploy, run each submodule's compose on its own host —
+# see README → "跨机部署".
+
+include:
+  - service/data_svc/docker-compose.postgres.yml
+  - service/data_svc/docker-compose.yml
+  - service/tco_svc/docker-compose.yml
+  - service/surrogate_svc/docker-compose.yml
+  - service/bytesim_svc/docker-compose.yml
+  - service/engine_svc/docker-compose.yml
+  - bff/docker-compose.yml
+
 services:
-  postgres:
-    restart: unless-stopped
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bytesim
-      POSTGRES_PASSWORD: bytesim
-      POSTGRES_DB: bytesim
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./service/data_svc/migrations:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      # -h 127.0.0.1 forces a TCP probe rather than the Unix socket the
-      # init scripts use during the first-pass startup. Otherwise pg_isready
-      # passes during the init phase, deps start, then PG restarts to bind
-      # TCP — racing the deps into "connection refused" before they retry.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bytesim -d bytesim"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
-      start_period: 15s
-
-  # P2.3 retired Kafka/Redpanda — engine_svc polls bs_run.status at stage
-  # boundaries for cancel propagation; bs_run_event captures lifecycle.
-  # No external bus needed.
-
-  # Phase 2 cutover — artifact content now lives in bs_artifact.content
-  # (PG JSONB). The legacy artifacts-init busybox bootstrap + bind-mounted
-  # /artifacts volume + ARTIFACTS_DIR env are gone. data_svc and engine_svc
-  # can now run on separate nodes / pods (no shared filesystem).
-
-  # data_svc: merged Go service (former run_svc + asset-svc). Single binary
-  # serves /v1/runs/... + /v1/specs/... + /v1/catalog/... + artifact upload
-  # at :8081.
-  data_svc:
-    restart: unless-stopped
-    build:
-      context: ./service/data_svc
-    environment:
-      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim?sslmode=disable"
-      LISTEN_ADDR: ":8081"
-    ports:
-      - "8081:8081"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  surrogate_svc:
-    restart: unless-stopped
-    build:
-      context: ./service/surrogate_svc
-    environment:
-      # engine_registry_svc was merged into engine_svc — same wire contract,
-      # just a new hostname/port. The env var name is preserved for the
-      # surrogate / bytesim / bff clients that already use it.
-      ENGINE_REGISTRY_URL: "http://engine_svc:8087"
-      # Address engine_svc (registry surface) uses to reach this engine when
-      # routing /v1/predict — must match the compose service name + port.
-      ENGINE_SELF_URL: "http://surrogate_svc:8083"
-      # Phase 2 — pull GPU profile (peak_mfu, nvlink_domain, FP4 support)
-      # from bs_catalog at startup so users can register new SKUs without
-      # a new surrogate_svc image. Falls back to in-code baseline if down.
-      ASSET_SVC_URL: "http://data_svc:8081"
-    ports:
-      - "8083:8083"
-
-  engine_svc:
-    restart: unless-stopped
-    build:
-      context: ./service/engine_svc
-    environment:
-      # engine_svc owns both the pipeline orchestrator AND the registry
-      # surface now (engine_registry_svc was merged in). The registry routes
-      # are served on the same port, so the pipeline's predict client just
-      # loops back to localhost.
-      RUN_SVC_URL: "http://data_svc:8081"
-      ENGINE_REGISTRY_URL: "http://localhost:8087"
-      SURROGATE_URL: "http://surrogate_svc:8083"
-      TCO_SVC_URL: "http://tco_svc:8090"
-      POLL_INTERVAL_S: "2"
-      # Surrogate predict is sub-second; the 180s ceiling is headroom for
-      # any future heavier engine plugin. Doesn't bite analytical paths.
-      ENGINE_PREDICT_TIMEOUT_S: "180"
-      # Heartbeat staleness window — engine offline after this many seconds.
-      ENGINE_REGISTRY_STALE_S: "240"
-    ports:
-      - "8087:8087"
-    depends_on:
-      data_svc:
-        condition: service_healthy
-      surrogate_svc:
-        condition: service_healthy
-
-  # bytesim wrapper — GPU cluster simulation via ByteSim simulation scripts
-  # (run_sim.py / run_sim_m12.py / run_sim_mlsys_dit.py). Listens on :8083.
-  bytesim_svc:
-    restart: unless-stopped
-    build:
-      # Phase 3 collapsed engine/bytesim/ into the bytesim_svc repo, so the
-      # build context is now just the sibling repo.
-      context: ./service/bytesim_svc
-    environment:
-      # engine_registry_svc was merged into engine_svc — same wire contract,
-      # different hostname/port.
-      ENGINE_REGISTRY_URL: "http://engine_svc:8087"
-      # Address engine_svc (registry surface) uses to reach this engine when
-      # routing /v1/predict — must match the compose service name + port.
-      ENGINE_SELF_URL: "http://bytesim_svc:8083"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
-      start_period: 20s
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "8086:8083"
-
-  tco_svc:
-    restart: unless-stopped
-    build:
-      context: ./service/tco_svc
-    environment:
-      # Phase 1 consolidation: tco_svc no longer connects to PG.
-      # tco_rule + tco_breakdown tables are reached via data_svc HTTP.
-      RUN_SVC_URL: "http://data_svc:8081"
-    ports:
-      - "8090:8090"
-    depends_on:
-      data_svc:
-        condition: service_healthy
-
   bff:
-    restart: unless-stopped
-    build:
-      context: ./bff
     environment:
-      RUN_SVC_URL: "http://data_svc:8081"
-      ASSET_SVC_URL: "http://data_svc:8081"
-      ENGINE_SVC_URL: "http://engine_svc:8087"
-      # engine_registry surface is co-hosted on engine_svc since the merge.
-      ENGINE_REGISTRY_URL: "http://engine_svc:8087"
-      TCO_SVC_URL: "http://tco_svc:8090"
-      LISTEN_PORT: "8080"
-      # Dev opt-ins. Production deployments must export BFF_JWT_SECRET and
-      # BFF_CORS_ORIGINS explicitly and remove these two lines.
-      BFF_ALLOW_DEV_SECRET: "1"
-      BFF_ALLOW_DEV_CORS: "1"
-    ports:
-      - "8080:8080"
-    depends_on:
-      data_svc:
-        condition: service_healthy
-      engine_svc:
-        condition: service_healthy
-      tco_svc:
-        condition: service_healthy
+      - BFF_ALLOW_DEV_SECRET=1
+      - BFF_ALLOW_DEV_CORS=1
 
   web:
     image: node:20-alpine
@@ -168,5 +34,10 @@ services:
       - ./dashboard:/app
     command: sh -c "npm install --no-fund --no-audit && npm run dev -- --host 0.0.0.0"
 
+# Preserve the pre-include volume name (bytesim_platform_pgdata) so
+# users with existing dev data don't lose access on this refactor. The
+# included data_svc/docker-compose.postgres.yml declares `bytesim_pgdata`
+# project-scoped; the `name:` override pins it to the absolute name.
 volumes:
-  pgdata:
+  bytesim_pgdata:
+    name: bytesim_platform_pgdata
