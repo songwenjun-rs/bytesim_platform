@@ -40,7 +40,7 @@ specifies what to do instead.
 |---|-----------|-----------|
 | A | **Engine response is persisted verbatim** | Whatever surrogate emits is what the DB stores and what the UI reads. No intermediate filtering, merging, or placeholder injection. |
 | B | **JSONB columns for engine output** | Contract extensions become "add field on surrogate side" only — write path requires no change. UI reads with field-presence guards. |
-| C | **TCO is treated as another engine** | tco_engine_svc adopts `EnginePredictRequest/Response` contract. Stored, queried, versioned identically to surrogate output. |
+| C | **TCO is treated as another engine** | tco_svc adopts `EnginePredictRequest/Response` contract. Stored, queried, versioned identically to surrogate output. |
 | D | **Append-only event log replaces PATCH-driven updates** | `bs_run_event` captures stage transitions, log lines, status changes. UI subscribes; `bs_run` row only updates on lifecycle change. |
 | E | **Operational state vs engine output separated by table** | `bs_run` holds lifecycle (status/progress/timestamps); engine output lives in `bs_run_engine_call` keyed by `(run_id, engine, candidate_id)`. |
 | F | **Reports are derived from JOIN, not stored as entity** | `/v1/runs/{id}/report` is a query result. No "report" row to keep in sync. |
@@ -187,7 +187,7 @@ CREATE TABLE bs_calibration_snapshot (
 │                │                │     bs_run_engine_call│
 │ Reads:         │                │  4. Pick best;        │
 │ Listing /      │                │     UPDATE is_best    │
-│ filtering APIs │                │  5. Call tco-engine,  │
+│ filtering APIs │                │  5. Call tco-svc,  │
 │                │                │     same path         │
 └────────────────┘                │  6. Each transition → │
                                   │     bs_run_event row  │
@@ -203,7 +203,7 @@ CREATE TABLE bs_calibration_snapshot (
                                   └────┬──────────────┬─────────┘
                                        │              │
                               ┌────────▼──┐   ┌───────▼──────────┐
-                              │ surrogate │   │  tco-engine      │
+                              │ surrogate │   │  tco-svc      │
                               │   -svc    │   │  -svc (as engine)│
                               └───────────┘   └──────────────────┘
 ```
@@ -227,7 +227,7 @@ Responsibilities:
 | `engine_svc` | Allowlist filtering. Boundary placeholder synthesis. Writes to `run.kpis`. Writes to `run.boundaries`. |
 | `bff` | Aggregating 3 run_svc calls into one response. Business logic. |
 | `run_svc` | Storing KPIs / engine output / boundaries. (Becomes pure operational-state CRUD + event log.) |
-| `tco_engine_svc` | Owning a separate API surface. Adopts `EnginePredictRequest/Response`. |
+| `tco_svc` | Owning a separate API surface. Adopts `EnginePredictRequest/Response`. |
 
 ---
 
@@ -406,7 +406,7 @@ component + an `if (response.X)` presence guard.
 | Persist full response (JSONB) vs flatten to columns | JSONB | No column-level indexes; report query is always single-row by `run_id` so impact is negligible |
 | Keep all candidates vs only `is_best` | Keep all | Storage ≈ ×24 per run (few KB → low MB); worth it for audit + what-if UI |
 | Event table vs frequent PATCH on `bs_run` | Event table | Slightly more write rows but cheaper per-write, natural time-ordering for free, simpler streaming model |
-| TCO via engine contract vs separate API | Engine contract | tco-engine must adopt `EnginePredictRequest/Response` shape — request side may feel awkward (no `strategy` in pure TCO call) but the gain in pipeline uniformity is real |
+| TCO via engine contract vs separate API | Engine contract | tco-svc must adopt `EnginePredictRequest/Response` shape — request side may feel awkward (no `strategy` in pure TCO call) but the gain in pipeline uniformity is real |
 | Add `report-svc` vs aggregate in bff | New service / module | One more deployable unit; offset by clearer separation between auth (bff) and aggregation (report-svc). Can ship as a bff-internal module if a separate process is overkill |
 | Multi-engine in same table vs per-engine tables | Same table, discriminator column | Row width grows with the largest engine's response shape; JSONB compression mitigates |
 | WS-only live updates vs poll fallback | WS primary, REST fallback for the same `/report` endpoint | Standard pattern; no new risk |
@@ -421,7 +421,7 @@ Migration is out of scope for this design, but a reasonable sequence is:
 2. **Stand up `report-svc`.** It reads from the new table. Wire `bff` to call `report-svc` for a new `/v1/runs/{id}/report` endpoint, keep the legacy `/full` endpoint for back-compat.
 3. **Migrate frontend section by section** to the new endpoint. Verify each card reads from `report.predict.response.*` correctly.
 4. **Move artifacts to content-addressing.** Backfill `bs_artifact` from existing `bs_run.artifacts` JSONB. engine_svc starts using `bs_artifact` for new runs.
-5. **Move TCO to engine contract.** tco_engine_svc registers itself with engine-registry. engine_svc invokes via `/v1/predict`.
+5. **Move TCO to engine contract.** tco_svc registers itself with engine-registry. engine_svc invokes via `/v1/predict`.
 6. **Switch event log to `bs_run_event`.** engine_svc INSERTs events instead of `log_append` PATCHes. WS endpoint reads from event table.
 7. **Cut the allowlist and placeholder boundaries from `engine_svc/pipeline.py`.**
 8. **Drop legacy columns** from `bs_run` (`kpis`, `boundaries`, `artifacts`, `confidence`, `surrogate_ver`). Verify nothing reads them. Apply migration.

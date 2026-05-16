@@ -76,8 +76,8 @@ data_svc :8081           engine_registry_svc :8089
   │                          ├──→ surrogate_svc :8083  (service/surrogate_svc)
   │                          └──→ bytesim_svc :8083(8086) (service/bytesim_svc)
   │
-engine_svc :8087              tco_engine_svc :8090
-(service/engine_svc, Py)      (service/tco_engine_svc, Py)
+engine_svc :8087              tco_svc :8090
+(service/engine_svc, Py)      (service/tco_svc, Py)
   │                          │
   │ 5-stage pipeline + claim │ rule-based TCO breakdown
   │                          │
@@ -93,7 +93,7 @@ Postgres 16 :5432 (managed; schema migrations from service/data_svc/migrations/)
 4. validate checks `TP×PP×EP×CP ≤ gpu_count`; infeasible → raise, zero wasted predicts
 5. With `engine_preference`, `_run_pinned` forces routing to that engine; otherwise `_run_baseline + _run_scan` routes by fidelity / MAPE / SLA
 6. Each predict's request + response is written verbatim to `bs_run_engine_call`; each stage transition writes a `bs_run_event`
-7. select stage: mark is_best, upload 4 artifacts (Phase 2 — over HTTP, no shared volume), call tco_engine_svc → `bs_tco_breakdown`
+7. select stage: mark is_best, upload 4 artifacts (Phase 2 — over HTTP, no shared volume), call tco_svc → `bs_tco_breakdown`
 8. UI's `useRunReport` polls `/v1/runs/{id}/report` every 2s (data_svc assembles in-process with errgroup)
 
 ## Repository Layout (9 submodules + 1 orchestration repo)
@@ -115,7 +115,7 @@ bytesim_platform/                      ← orchestration repo (this)
 │   ├── engine_registry_svc/           ⬅ submodule · Python: engine registry + routing
 │   ├── surrogate_svc/                 ⬅ submodule · Python: analytical engine
 │   ├── bytesim_svc/                   ⬅ submodule · Python: cycle-accurate engine wrapper
-│   └── tco_engine_svc/                ⬅ submodule · Python: TCO computation
+│   └── tco_svc/                ⬅ submodule · Python: TCO computation
 │
 ├── docs/                              architecture + design docs
 ├── tests/                             cross-service integration (CI default: skip)
@@ -136,7 +136,7 @@ bytesim_platform/                      ← orchestration repo (this)
 | **bytesim_svc** | 8086 → 8083 | Python | ByteSim simulation engine (~300 ms SLA) | [service/bytesim_svc](service/bytesim_svc/README.md) |
 | **engine_svc** | 8087 | Python | 5-stage pipeline + atomic claim | [service/engine_svc](service/engine_svc/README.md) |
 | **engine_registry_svc** | 8089 | Python | Engine registry + envelope routing | [service/engine_registry_svc](service/engine_registry_svc/README.md) |
-| **tco_engine_svc** | 8090 | Python | Rule-based TCO breakdown (side-path) | [service/tco_engine_svc](service/tco_engine_svc/README.md) |
+| **tco_svc** | 8090 | Python | Rule-based TCO breakdown (side-path) | [service/tco_svc](service/tco_svc/README.md) |
 | **web** | 5173 | TS/React | Vite SPA + Playwright | [dashboard](dashboard/README.md) |
 | **engine_contracts** | — | YAML | Single source of cross-service data contracts | [engine_contracts](engine_contracts/README.md) |
 
@@ -162,7 +162,7 @@ Numbers 003-005 / 018-019 / 030 are gaps from removed subsystems (tuner / calibr
 
 ### Sharing migrations across services
 
-Migrations live in data_svc. Other Python services that need PG integration tests (engine-registry / tco-engine) keep a **vendored copy** under `tests/integration/migrations/`. Data-svc schema changes require manual sync — GitHub Actions' default `GITHUB_TOKEN` can't clone private siblings, which ruled out the git-submodule approach. This is a pragmatic tradeoff.
+Migrations live in data_svc. Other Python services that need PG integration tests (engine-registry / tco-svc) keep a **vendored copy** under `tests/integration/migrations/`. Data-svc schema changes require manual sync — GitHub Actions' default `GITHUB_TOKEN` can't clone private siblings, which ruled out the git-submodule approach. This is a pragmatic tradeoff.
 
 ### Phase 2: artifact content in DB
 
@@ -192,7 +192,7 @@ See [service/data_svc/README.md](service/data_svc/README.md#测试访问-pg-的�
 | surrogate_svc | 87% | — |
 | engine_svc | 82% | — |
 | engine_registry_svc | 68% overall | store: 26% → **88%** |
-| tco_engine_svc | 82% overall | store: 24% → **90%** |
+| tco_svc | 82% overall | store: 24% → **90%** |
 | data_svc | 35% | total 35% → **61%**, store 3.5% → **47.5%** |
 | web | 73% lines | — |
 

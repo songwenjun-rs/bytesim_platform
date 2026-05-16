@@ -33,16 +33,16 @@ services:
     ports:
       - "18083:8083"
 
-  tco_engine_svc:
+  tco_svc:
     build:
-      context: ../../service/tco_engine_svc
-    image: cross-host-tco-engine-svc:dev
-    container_name: cross-host-tco-engine-svc
+      context: ../../service/tco_svc
+    image: cross-host-tco-svc:dev
+    container_name: cross-host-tco-svc
     restart: unless-stopped
     networks: [host-d-net]
     env_file: ./env/host-d.env
     environment:
-      # Phase 1 consolidation: tco_engine_svc no longer connects to PG.
+      # Phase 1 consolidation: tco_svc no longer connects to PG.
       # It now reaches the tco_rule / tco_breakdown tables via data_svc.
       RUN_SVC_URL: http://host.docker.internal:18081
     ports:
@@ -65,4 +65,4 @@ services:
     ports:
       - "18087:8087"
     depends_on:
-      - tco_engine_svc
+      - tco_svc

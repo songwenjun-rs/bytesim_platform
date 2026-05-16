@@ -24,7 +24,7 @@ declare -a L1=(
   "host C / data_svc      http://localhost:18081/healthz"
   "host D / engine_svc    http://localhost:18087/healthz"
   "host D / surrogate     http://localhost:18083/healthz"
-  "host D / tco_engine    http://localhost:18090/healthz"
+  "host D / tco_svc       http://localhost:18090/healthz"
   "host B / bff           http://localhost:18080/healthz"
   "host A / nginx → SPA   http://localhost:8443/"
 )
@@ -69,11 +69,11 @@ pass "/v1/engines (bff → registry on host D)"
 
 # /v1/tco/rules currently 500s due to a pre-existing pydantic serialiser bug
 # (asyncpg.types.Range not serializable). Plumbing is fine — any non-timeout
-# / non-refused response from bff means the cross-host link to tco_engine
+# / non-refused response from bff means the cross-host link to tco_svc
 # is up; we don't care about the application-level 500 for this check.
 TCO_CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
   http://localhost:8443/v1/tco/rules -H "$AUTH_H" -H "$PROJ_H" 2>&1)
-[[ "$TCO_CODE" == "200" ]] && pass "/v1/tco/rules (bff → tco_engine on host D)" \
+[[ "$TCO_CODE" == "200" ]] && pass "/v1/tco/rules (bff → tco_svc on host D)" \
                            || pass "/v1/tco/rules (got $TCO_CODE — plumbing ok, app bug)"
 
 curl -fsS "http://localhost:8443/v1/runs?limit=1" -H "$AUTH_H" -H "$PROJ_H" >/dev/null \

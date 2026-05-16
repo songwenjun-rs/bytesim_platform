@@ -29,7 +29,7 @@ traffic takes through a router / LB.
 │                 │  │                       │       │
 │  postgres       │  │  surrogate_svc        │       │
 │   :5432 → 15432 │  │   :8083 → 18083       │       │
-│                 │  │  tco_engine_svc       │       │
+│                 │  │  tco_svc              │       │
 │  data_svc       │  │   :8090 → 18090       │       │
 │   :8081 → 18081 │  │  engine_svc + reg     │       │
 │                 │  │   :8087 → 18087       │       │

@@ -1,8 +1,15 @@
 """Live-PG integration tests for the Python store layers.
 
+NOTE (2026-05-16): This file pre-dates the P1/P2 consolidation. Both tco_svc
+and (the now-removed) engine_registry_svc moved off direct PG access — their
+Store classes are httpx clients now, not asyncpg pools. `s.dsn = dsn` no
+longer applies. The engine_registry_svc fixture references a submodule that
+was absorbed into engine_svc in P3. Kept for historical reference until the
+file is rewritten against the data_svc HTTP API.
+
 Lifts coverage of:
-  - service/tco_engine_svc/app/store.py
-  - service/engine_registry_svc/app/store.py
+  - service/tco_svc/app/store.py            (pre-P1, asyncpg)
+  - service/engine_registry_svc/app/store.py (pre-P3, removed)
 
 Skip when PG_DSN isn't set, so the default `pytest tests/` flow stays
 untouched. Mirrors the Go-side integration tests pattern.
@@ -64,7 +71,7 @@ def _restore(saved_path, saved_mods):
 @pytest_asyncio.fixture
 async def tco_store():
     dsn = _dsn()
-    mod, sp, sm = _import_svc_store("tco_engine_svc")
+    mod, sp, sm = _import_svc_store("tco_svc")
     s = mod.Store()
     s.dsn = dsn
     await s.open()
@@ -89,7 +96,7 @@ async def registry_store():
         _restore(sp, sm)
 
 
-# ── tco_engine_svc/app/store.py ────────────────────────────────────────────
+# ── tco_svc/app/store.py ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_tco_list_rules_seeded(tco_store):

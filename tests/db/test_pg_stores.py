@@ -66,7 +66,7 @@ def _import(svc: str, mod: str):
 
 @pytest.fixture
 def tco_store_factory(applied_dsn):
-    mod = _import("tco_engine_svc", "store")
+    mod = _import("tco_svc", "store")
 
     async def make():
         s = mod.Store()

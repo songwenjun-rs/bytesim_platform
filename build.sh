@@ -23,7 +23,7 @@ ALL=(
   "service/engine_svc"
   "service/surrogate_svc"
   "service/bytesim_svc"
-  "service/tco_engine_svc"
+  "service/tco_svc"
   "dashboard"
 )
 

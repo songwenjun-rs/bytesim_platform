@@ -19,6 +19,6 @@
 [submodule "service/bytesim_svc"]
 	path = service/bytesim_svc
 	url = git@github.com:songwenjun-rs/bytesim_svc.git
-[submodule "service/tco_engine_svc"]
-	path = service/tco_engine_svc
-	url = git@github.com:songwenjun-rs/bytesim_tco_engine_svc.git
+[submodule "service/tco_svc"]
+	path = service/tco_svc
+	url = git@github.com:songwenjun-rs/bytesim_tco_svc.git

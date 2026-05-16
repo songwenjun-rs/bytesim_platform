@@ -17,17 +17,18 @@ import os
 from pathlib import Path
 
 # Post-restructure layout (May 2026): top-level dirs for the SPA + gateway,
-# `service/` parent for the 6 backend Python/Go services.
+# `service/` parent for the 5 backend Python/Go services (P3 merge:
+# engine_registry_svc was absorbed into engine_svc; rename: tco_engine_svc
+# → tco_svc).
 _PATH = {
-    "bff":                 "bff",
-    "dashboard":           "dashboard",
-    "web":                 "dashboard",   # legacy alias
-    "data_svc":            "service/data_svc",
-    "engine_svc":          "service/engine_svc",
-    "engine_registry_svc": "service/engine_registry_svc",
-    "surrogate_svc":       "service/surrogate_svc",
-    "bytesim_svc":         "service/bytesim_svc",
-    "tco_engine_svc":      "service/tco_engine_svc",
+    "bff":           "bff",
+    "dashboard":     "dashboard",
+    "web":           "dashboard",   # legacy alias
+    "data_svc":      "service/data_svc",
+    "engine_svc":    "service/engine_svc",
+    "surrogate_svc": "service/surrogate_svc",
+    "bytesim_svc":   "service/bytesim_svc",
+    "tco_svc":       "service/tco_svc",
 }
 
 
