@@ -1,28 +1,139 @@
-# Local-dev fullstack — pulls each submodule's docker-compose.yml via
-# `include:` so this file only owns the things specific to running
-# everything on one machine:
-#   - dev-mode shortcuts for bff (skip the strong-secret + CORS gates)
-#   - `web`: Vite hot-reload SPA at :5173. Production-shape SPA is
-#     dashboard/docker-compose.yml (nginx + baked dist/).
+# Local-dev fullstack — 手动展开版（兼容 docker-compose v1）。
 #
-# For cross-host deploy, run each submodule's compose on its own host —
-# see README → "跨机部署".
+# 原文件使用 Compose v2 的 `include:` 机制聚合各子模块的
+# docker-compose.yml；docker-compose v1 不识别 `include`，因此这里
+# 手动把以下 7 个文件的 services / volumes 内联展开：
+#   - service/data_svc/docker-compose.postgres.yml
+#   - service/data_svc/docker-compose.yml
+#   - service/tco_svc/docker-compose.yml
+#   - service/surrogate_svc/docker-compose.yml
+#   - service/bytesim_svc/docker-compose.yml
+#   - service/engine_svc/docker-compose.yml
+#   - bff/docker-compose.yml
+#
+# 主要差异：
+#   - 每个服务的 `build: .` 改为指向各自子目录（构建上下文）。
+#   - postgres 的 `./migrations` 改为 `./service/data_svc/migrations`。
+#   - bff 的 dev 覆盖（BFF_ALLOW_DEV_SECRET / BFF_ALLOW_DEV_CORS）已合并
+#     到 bff 的 environment 中。
+#   - v1 需要顶部 `version:` 字段。
 
-include:
-  - service/data_svc/docker-compose.postgres.yml
-  - service/data_svc/docker-compose.yml
-  - service/tco_svc/docker-compose.yml
-  - service/surrogate_svc/docker-compose.yml
-  - service/bytesim_svc/docker-compose.yml
-  - service/engine_svc/docker-compose.yml
-  - bff/docker-compose.yml
+version: "3.8"
 
 services:
-  bff:
+  # ===== service/data_svc/docker-compose.postgres.yml =====
+  postgres:
+    restart: unless-stopped
+    image: postgres:16-alpine
     environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bytesim}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bytesim}
+      POSTGRES_DB: ${POSTGRES_DB:-bytesim}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - bytesim_pgdata:/var/lib/postgresql/data
+      - ./service/data_svc/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP probe rather than the Unix socket the
+      # init scripts use during first-pass startup. Otherwise pg_isready
+      # passes during init, deps start, then PG restarts to bind TCP —
+      # racing deps into "connection refused".
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-bytesim} -d ${POSTGRES_DB:-bytesim}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # ===== service/data_svc/docker-compose.yml =====
+  data_svc:
+    restart: unless-stopped
+    build: ./service/data_svc
+    environment:
+      PG_DSN: ${PG_DSN:-postgres://bytesim:bytesim@host.docker.internal:5432/bytesim?sslmode=disable}
+      LISTEN_ADDR: ${LISTEN_ADDR:-:8081}
+    ports:
+      - "${DATA_SVC_HOST_PORT:-8081}:8081"
+
+  # ===== service/tco_svc/docker-compose.yml =====
+  tco_svc:
+    restart: unless-stopped
+    build: ./service/tco_svc
+    environment:
+      RUN_SVC_URL: ${RUN_SVC_URL:-http://host.docker.internal:8081}
+    ports:
+      - "${TCO_SVC_HOST_PORT:-8090}:8090"
+
+  # ===== service/surrogate_svc/docker-compose.yml =====
+  surrogate_svc:
+    restart: unless-stopped
+    build: ./service/surrogate_svc
+    environment:
+      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
+      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://host.docker.internal:8083}
+      ASSET_SVC_URL: ${ASSET_SVC_URL:-http://host.docker.internal:8081}
+    ports:
+      - "${SURROGATE_HOST_PORT:-8083}:8083"
+
+  # ===== service/bytesim_svc/docker-compose.yml =====
+  # 注意：bytesim_svc 默认不在 `make up` 中启动；其构建依赖 repo 中
+  # 不包含的外部资产（engine/bytesim/synverse/src、extern/charon、
+  # topo_files、network_config.toml）。需要时使用 `make up-all`。
+  bytesim_svc:
+    restart: unless-stopped
+    build: ./service/bytesim_svc
+    environment:
+      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
+      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://host.docker.internal:8086}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${BYTESIM_HOST_PORT:-8086}:8083"
+
+  # ===== service/engine_svc/docker-compose.yml =====
+  engine_svc:
+    restart: unless-stopped
+    build: ./service/engine_svc
+    environment:
+      RUN_SVC_URL: ${RUN_SVC_URL:-http://host.docker.internal:8081}
+      # Loopback by default — the registry surface lives in this same
+      # process, so the pipeline's predict client can stay in-process.
+      # Override only for split deployments where pipeline runs on a
+      # different replica from the registry routes (uncommon).
+      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://localhost:8087}
+      SURROGATE_URL: ${SURROGATE_URL:-http://host.docker.internal:8083}
+      TCO_SVC_URL: ${TCO_SVC_URL:-http://host.docker.internal:8090}
+      POLL_INTERVAL_S: ${POLL_INTERVAL_S:-2}
+      ENGINE_PREDICT_TIMEOUT_S: ${ENGINE_PREDICT_TIMEOUT_S:-180}
+      ENGINE_REGISTRY_STALE_S: ${ENGINE_REGISTRY_STALE_S:-240}
+    ports:
+      - "${ENGINE_SVC_HOST_PORT:-8087}:8087"
+
+  # ===== bff/docker-compose.yml（含主文件中的 dev 覆盖）=====
+  bff:
+    restart: unless-stopped
+    build: ./bff
+    environment:
+      - RUN_SVC_URL=${RUN_SVC_URL:-http://host.docker.internal:8081}
+      - ASSET_SVC_URL=${ASSET_SVC_URL:-http://host.docker.internal:8081}
+      - ENGINE_SVC_URL=${ENGINE_SVC_URL:-http://host.docker.internal:8087}
+      - ENGINE_REGISTRY_URL=${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
+      - TCO_SVC_URL=${TCO_SVC_URL:-http://host.docker.internal:8090}
+      - LISTEN_PORT=${LISTEN_PORT:-8080}
+      - BFF_JWT_SECRET
+      # dev 覆盖：原主文件中 services.bff 的额外环境变量
       - BFF_ALLOW_DEV_SECRET=1
       - BFF_ALLOW_DEV_CORS=1
+      - BFF_CORS_ORIGINS
+      - BFF_JWT_TTL
+    ports:
+      - "${BFF_HOST_PORT:-8080}:8080"
 
+  # ===== 主文件原有的 web（Vite 热重载 SPA）=====
   web:
     image: node:20-alpine
     working_dir: /app
@@ -35,9 +146,7 @@ services:
     command: sh -c "npm install --no-fund --no-audit && npm run dev -- --host 0.0.0.0"
 
 # Preserve the pre-include volume name (bytesim_platform_pgdata) so
-# users with existing dev data don't lose access on this refactor. The
-# included data_svc/docker-compose.postgres.yml declares `bytesim_pgdata`
-# project-scoped; the `name:` override pins it to the absolute name.
+# users with existing dev data don't lose access on this refactor.
 volumes:
   bytesim_pgdata:
     name: bytesim_platform_pgdata

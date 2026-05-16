@@ -5,28 +5,28 @@
 # network_config.toml) that aren't in this repo. Use `make up-all` once
 # those paths are populated.
 up:
-	docker compose up --build -d postgres data_svc tco_svc surrogate_svc engine_svc bff web
+	docker-compose up --build -d postgres data_svc tco_svc surrogate_svc engine_svc bff web
 	@echo "→ http://localhost:5173 (web)  ·  http://localhost:8080/healthz (bff)  ·  http://localhost:8081/healthz (data_svc)  ·  http://localhost:8087/healthz (engine_svc + registry)"
 
 up-all:
-	docker compose up --build -d
+	docker-compose up --build -d
 	@echo "→ http://localhost:5173 (web)  ·  http://localhost:8080/healthz (bff)  ·  http://localhost:8081/healthz (data_svc)  ·  http://localhost:8087/healthz (engine_svc + registry)  ·  http://localhost:8086/healthz (bytesim)"
 
 down:
-	docker compose down
+	docker-compose down
 
 reset:
-	docker compose down -v
+	docker-compose down -v
 	$(MAKE) up
 
 logs:
-	docker compose logs -f --tail=120
+	docker-compose logs -f --tail=120
 
 ps:
-	docker compose ps
+	docker-compose ps
 
 psql:
-	docker compose exec postgres psql -U bytesim -d bytesim
+	docker-compose exec postgres psql -U bytesim -d bytesim
 
 tidy:
 	cd service/data_svc && go mod tidy
