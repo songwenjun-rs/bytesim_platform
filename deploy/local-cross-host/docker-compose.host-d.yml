@@ -53,7 +53,9 @@ services:
     networks: [host-d-net]
     env_file: ./env/host-d.env
     environment:
-      PG_DSN: postgres://bytesim:bytesim@host.docker.internal:15432/bytesim
+      # Phase 1 consolidation: tco_engine_svc no longer connects to PG.
+      # It now reaches the tco_rule / tco_breakdown tables via data_svc.
+      RUN_SVC_URL: http://host.docker.internal:18081
     ports:
       - "18090:8090"
 

@@ -143,11 +143,13 @@ services:
     build:
       context: ./service/tco_engine_svc
     environment:
-      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+      # Phase 1 consolidation: tco_engine_svc no longer connects to PG.
+      # tco_rule + tco_breakdown tables are reached via data_svc HTTP.
+      RUN_SVC_URL: "http://data_svc:8081"
     ports:
       - "8090:8090"
     depends_on:
-      postgres:
+      data_svc:
         condition: service_healthy
 
   bff:
