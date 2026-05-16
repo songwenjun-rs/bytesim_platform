@@ -1,4 +1,4 @@
-.PHONY: up up-all down logs ps reset psql tidy fmt e2e e2e-ci e2e-engines surrogate-bench hwspec-doc engine-kick
+.PHONY: up up-all down logs ps reset psql tidy fmt e2e e2e-ci e2e-engines surrogate-bench hwspec-doc engine-kick seed
 
 # Default `up` skips bytesim_svc because its build requires external
 # engine assets (engine/bytesim/synverse/src, extern/charon, topo_files,
@@ -27,6 +27,13 @@ ps:
 
 psql:
 	docker-compose exec postgres psql -U bytesim -d bytesim
+
+# Load demo specs into a freshly-migrated data_svc — 1 hwspec + 1 model +
+# 2 strategies + 2 workloads, enough for the UI to drive Training or
+# Inference simulations without manual seeding. Idempotent.
+# Production deploys shouldn't run this; reference data lives in migrations.
+seed:
+	@bash service/data_svc/seeds/load.sh
 
 tidy:
 	cd service/data_svc && go mod tidy
