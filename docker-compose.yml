@@ -16,9 +16,10 @@
 #   - postgres 的 `./migrations` 改为 `./service/data_svc/migrations`。
 #   - bff 的 dev 覆盖（BFF_ALLOW_DEV_SECRET / BFF_ALLOW_DEV_CORS）已合并
 #     到 bff 的 environment 中。
-#   - v1 需要顶部 `version:` 字段。
-
-version: "3.8"
+#
+# 不再需要顶部 `version:` —— Compose v2（包括 docker-compose 作为 v2 别名
+# 的现代安装）忽略它并打 warning。如果你确实在跑 1.x 的 Python 旧版
+# docker-compose，加回 `version: "3.8"` 即可。
 
 services:
   # ===== service/data_svc/docker-compose.postgres.yml =====
