@@ -19,8 +19,9 @@ services:
     networks: [host-d-net]
     env_file: ./env/host-d.env
     environment:
-      # registry connects to PG on "host C"
-      PG_DSN: postgres://bytesim:bytesim@host.docker.internal:15432/bytesim
+      # Phase 2 consolidation: registry no longer connects to PG.
+      # bs_engine reads/writes are reached via data_svc HTTP on "host C".
+      RUN_SVC_URL: http://host.docker.internal:18081
     ports:
       - "18089:8089"
 

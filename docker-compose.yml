@@ -100,8 +100,13 @@ services:
     restart: unless-stopped
     build:
       context: ./service/engine_registry_svc
+    depends_on:
+      data_svc:
+        condition: service_healthy
     environment:
-      PG_DSN: "postgres://bytesim:bytesim@postgres:5432/bytesim"
+      # Phase 2 consolidation: registry no longer connects to PG.
+      # bs_engine reads/writes are reached via data_svc HTTP.
+      RUN_SVC_URL: "http://data_svc:8081"
       # Surrogate predict is sub-second; the 180s ceiling is headroom for
       # any future heavier engine plugin. Doesn't bite analytical paths.
       ENGINE_PREDICT_TIMEOUT_S: "180"
