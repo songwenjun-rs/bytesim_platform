@@ -18,7 +18,7 @@ traffic takes through a router / LB.
 ┌────────────────────────────┴─────────────────────────────────────────┐
 │ Host B (host-b-net) — gateway                                        │
 │   bff                  :8080 → published :18080                       │
-│   fans out via host.docker.internal:{18081,18087,18089,18090}        │
+│   fans out via host.docker.internal:{18081,18087,18090}              │
 └────────────────────────────┬─────────────────────────────────────────┘
                              │
         ┌────────────────────┼────────────────────────┐
@@ -27,13 +27,11 @@ traffic takes through a router / LB.
 │ Host C          │  │ Host D                │       │
 │  (host-c-net)   │  │  (host-d-net)         │       │
 │                 │  │                       │       │
-│  postgres       │  │  engine_registry_svc  │       │
-│   :5432 → 15432 │  │   :8089 → 18089       │       │
-│                 │  │  surrogate_svc        │       │
-│  data_svc       │  │   :8083 → 18083       │       │
-│   :8081 → 18081 │  │  tco_engine_svc       │       │
-│                 │  │   :8090 → 18090       │       │
-│                 │  │  engine_svc           │       │
+│  postgres       │  │  surrogate_svc        │       │
+│   :5432 → 15432 │  │   :8083 → 18083       │       │
+│                 │  │  tco_engine_svc       │       │
+│  data_svc       │  │   :8090 → 18090       │       │
+│   :8081 → 18081 │  │  engine_svc + reg     │       │
 │                 │  │   :8087 → 18087       │       │
 └─────────────────┘  └───────────────────────┘       │
         ▲                    ▲                        │
@@ -120,7 +118,7 @@ bash down.sh --clean     # stop + wipe postgres data volume
 ## Why not just use the main `docker-compose.yml`?
 
 The main compose puts all services on one shared bridge network. They reach
-each other via service-name DNS (`data_svc:8081`, `engine_registry_svc:8089`).
+each other via service-name DNS (`data_svc:8081`, `engine_svc:8087`).
 That works perfectly in production-ish docker-compose deploys, but it lets
 misconfigured `ENGINE_SELF_URL` / hardcoded localhost references slip
 through — because everything happens to be on the same docker network.

@@ -23,12 +23,13 @@ section "L1 — per-host /healthz (probes each tier in isolation)"
 declare -a L1=(
   "host C / data_svc      http://localhost:18081/healthz"
   "host D / engine_svc    http://localhost:18087/healthz"
-  "host D / registry      http://localhost:18089/healthz"
   "host D / surrogate     http://localhost:18083/healthz"
   "host D / tco_engine    http://localhost:18090/healthz"
   "host B / bff           http://localhost:18080/healthz"
   "host A / nginx → SPA   http://localhost:8443/"
 )
+# Note: engine_registry_svc was merged into engine_svc — its /healthz is
+# served by engine_svc above; the standalone :18089 endpoint is gone.
 for row in "${L1[@]}"; do
   name="${row%% http*}"; url="${row##*  }"
   curl_ok "$url" && pass "$name" || fail "$name ($url)" 1
@@ -36,7 +37,8 @@ done
 
 # ── L2: engine self-registration via registry ──────────────────────────
 section "L2 — engine self-registration (surrogate should appear in registry)"
-ENGINES=$(curl -fsS http://localhost:18089/v1/engines 2>/dev/null \
+# Registry now lives at engine_svc:18087 since the merge.
+ENGINES=$(curl -fsS http://localhost:18087/v1/engines 2>/dev/null \
          | python3 -c 'import json,sys; [print(e["name"]) for e in json.load(sys.stdin)]' \
          2>/dev/null)
 echo "  registered engines:"
@@ -80,8 +82,9 @@ pass "/v1/runs (bff → data_svc on host C)"
 
 # ── L4: direct upstream reach (bypass bff) ──────────────────────────────
 section "L4 — direct upstream reach (catches misconfigured ENGINE_SELF_URL)"
-# Predict via registry should fanout to surrogate at host.docker.internal:18083
-curl -fsS -X POST http://localhost:18089/v1/predict \
+# Predict via registry (now co-hosted on engine_svc) should fanout to
+# surrogate at host.docker.internal:18083.
+curl -fsS -X POST http://localhost:18087/v1/predict \
   -H 'Content-Type: application/json' \
   -d '{"runspec":{"model_family":"transformer-dense","parallelism":{"TP":1,"PP":1,"EP":1,"CP":1,"recompute":"selective","overlap":"1F1B"}},"hardware":{"gpu":"H100","gpus":128,"fabric":"nvlink"},"quant":"BF16","mode":"training"}' \
   >/dev/null 2>&1 \
@@ -106,20 +109,23 @@ printf '%s\n' "$WS_PROBE" | grep -qE 'HTTP/1\.1 (101|400|401|403)' \
   || fail "nginx didn't proxy the WS upgrade — check Connection/Upgrade headers in nginx.conf" 5
 
 # ── L6: kill a host, recovery behavior ─────────────────────────────────
-section "L6 — fault injection (stop registry, verify graceful degradation)"
-docker stop cross-host-engine-registry-svc >/dev/null 2>&1
-echo "  stopped registry; querying /v1/engines (expect 5xx, not hang)..."
+section "L6 — fault injection (stop engine_svc, verify graceful degradation)"
+# After the merge, engine_svc owns both orchestrator and registry surface,
+# so stopping it takes both down at once. The downstream check (bff returns
+# 5xx for /v1/engines, not a hang) is the same as before.
+docker stop cross-host-engine-svc >/dev/null 2>&1
+echo "  stopped engine_svc; querying /v1/engines (expect 5xx, not hang)..."
 RC=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 \
      http://localhost:8443/v1/engines 2>&1 || true)
-[[ "$RC" =~ ^5 ]] && pass "/v1/engines surfaces 5xx (not hang) when registry down — got $RC" \
+[[ "$RC" =~ ^5 ]] && pass "/v1/engines surfaces 5xx (not hang) when engine_svc down — got $RC" \
                   || echo "  ⚠ unexpected response code: $RC"
 
-docker start cross-host-engine-registry-svc >/dev/null 2>&1
-echo "  restarted registry; waiting 8s for surrogate to re-register..."
+docker start cross-host-engine-svc >/dev/null 2>&1
+echo "  restarted engine_svc; waiting 8s for surrogate to re-register..."
 sleep 8
-RECOVERED=$(curl -fsS http://localhost:18089/v1/engines 2>/dev/null \
+RECOVERED=$(curl -fsS http://localhost:18087/v1/engines 2>/dev/null \
             | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
-[[ "$RECOVERED" -gt 0 ]] && pass "surrogate re-registered after registry restart ($RECOVERED engines)" \
+[[ "$RECOVERED" -gt 0 ]] && pass "surrogate re-registered after engine_svc restart ($RECOVERED engines)" \
                          || fail "surrogate did not re-register" 6
 
 # ── L7: end-to-end run (everything coordinates) ────────────────────────

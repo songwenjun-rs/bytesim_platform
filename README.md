@@ -8,7 +8,7 @@ ByteSim 是 AI 基础设施的仿真平台。给定硬件拓扑、模型、并�
 
 - [快速开始](#快速开始)
 - [架构](#架构)
-- [仓库结构（9 submodule + 1 编排仓）](#仓库结构9-submodule--1-编排仓)
+- [仓库结构（8 submodule + 1 编排仓）](#仓库结构9-submodule--1-编排仓)
 - [服务清单](#服务清单)
 - [数据层](#数据层)
 - [测试与 CI](#测试与-ci)
@@ -68,19 +68,17 @@ make reset      # docker-compose down -v && up，清空 PG
    │  thin proxy + auth + JSON Schema 导出   │
    │                                          │
    ▼                                          ▼
-data_svc :8081           engine_registry_svc :8089
-(service/data_svc, Go)     (service/engine_registry_svc, Py)
-  │                          │
-  │ runs / specs / catalog    │ envelope match + 路由
-  │ artifacts / events        │
-  │                          ├──→ surrogate_svc :8083  (service/surrogate_svc)
-  │                          └──→ bytesim_svc :8083(8086) (service/bytesim_svc)
+data_svc :8081                    engine_svc :8087
+(service/data_svc, Go)            (service/engine_svc, Py)
+  │                                │  5 阶段管线 + claim
+  │ runs / specs / catalog          │  + 引擎注册/路由（合并自 engine_registry_svc）
+  │ artifacts / events / engines    │
+  │                                 ├──→ surrogate_svc :8083  (service/surrogate_svc)
+  │                                 └──→ bytesim_svc :8083(8086) (service/bytesim_svc)
   │
-engine_svc :8087              tco_engine_svc :8090
-(service/engine_svc, Py)      (service/tco_engine_svc, Py)
-  │                          │
-  │ 5 阶段管线 + claim       │ rule-based TCO breakdown
-  │                          │
+  │                          tco_engine_svc :8090
+  │                          (service/tco_engine_svc, Py)
+  │                          │  rule-based TCO breakdown
   ▼                          ▼
 Postgres 16 :5432 (托管, schema migrations from service/data_svc/migrations/)
 ```
@@ -96,12 +94,12 @@ Postgres 16 :5432 (托管, schema migrations from service/data_svc/migrations/)
 7. select 阶段：mark is_best、上传 4 个 artifact（Phase 2 后走 HTTP，不再共享卷）、调 tco_engine_svc → `bs_tco_breakdown`
 8. 前端 `useRunReport` 每 2 s 拉 `/v1/runs/{id}/report`（data_svc 内部 errgroup 并发组装）
 
-## 仓库结构（9 submodule + 1 编排仓）
+## 仓库结构（8 submodule + 1 编排仓）
 
 ```
 bytesim_platform/                      ← 编排仓（this repo）
 ├── docker-compose.yml                 docker compose 编排（context 指向 submodule 目录）
-├── .gitmodules                        9 个 submodule 声明（URL → github.com/songwenjun-rs/bytesim-*）
+├── .gitmodules                        8 个 submodule 声明（URL → github.com/songwenjun-rs/bytesim-*）
 ├── Makefile                           make up / e2e
 │
 ├── engine_contracts/                  ⬅ submodule · 跨服务契约源（OpenAPI YAML）
@@ -111,8 +109,7 @@ bytesim_platform/                      ← 编排仓（this repo）
 │   └── bff/                           ⬅ submodule · FastAPI 网关
 ├── backend/
 │   ├── data_svc/                      ⬅ submodule · Go：runs/specs/catalog/artifacts + 33 migrations
-│   ├── engine_svc/                    ⬅ submodule · Python：5 阶段管线
-│   ├── engine_registry_svc/           ⬅ submodule · Python：引擎注册 + 路由
+│   ├── engine_svc/                    ⬅ submodule · Python：5 阶段管线 + 引擎注册/路由
 │   ├── surrogate_svc/                 ⬅ submodule · Python：解析模型引擎
 │   ├── bytesim_svc/                   ⬅ submodule · Python：cycle-accurate 引擎包装
 │   └── tco_engine_svc/                ⬅ submodule · Python：TCO 计算
@@ -135,7 +132,7 @@ bytesim_platform/                      ← 编排仓（this repo）
 └── tools/                             平台运维工具
 ```
 
-> **没有 `services/` / `shared/` / `web/` / `engine/` / `infra/postgres/`** —— 这些目录在 Phase 1/2/3 拆仓过程中已删除，内容分散到 9 个 submodule。
+> **没有 `services/` / `shared/` / `web/` / `engine/` / `infra/postgres/`** —— 这些目录在 Phase 1/2/3 拆仓过程中已删除，内容分散到 8 个 submodule。
 
 ## 服务清单
 
@@ -145,8 +142,7 @@ bytesim_platform/                      ← 编排仓（this repo）
 | **data_svc** | 8081 | Go | 数据层：runs / specs / catalog / artifacts + 33 migrations | [service/data_svc](service/data_svc/README.md) |
 | **surrogate_svc** | 8083 | Python | 解析公式 surrogate（< 100 ms what-if） | [service/surrogate_svc](service/surrogate_svc/README.md) |
 | **bytesim_svc** | 8086 → 8083 | Python | ByteSim 仿真引擎（~300 ms SLA） | [service/bytesim_svc](service/bytesim_svc/README.md) |
-| **engine_svc** | 8087 | Python | 5 阶段管线 + 原子 claim | [service/engine_svc](service/engine_svc/README.md) |
-| **engine_registry_svc** | 8089 | Python | 引擎注册 + envelope 路由 | [service/engine_registry_svc](service/engine_registry_svc/README.md) |
+| **engine_svc** | 8087 | Python | 5 阶段管线 + 原子 claim + 引擎注册/envelope 路由（合并自 engine_registry_svc） | [service/engine_svc](service/engine_svc/README.md) |
 | **tco_engine_svc** | 8090 | Python | rule-based TCO breakdown（侧路） | [service/tco_engine_svc](service/tco_engine_svc/README.md) |
 | **web** | 5173 | TS/React | Vite SPA + Playwright | [dashboard](dashboard/README.md) |
 | **engine_contracts** | — | YAML | 跨服务数据契约的单一源 | [engine_contracts](engine_contracts/README.md) |
@@ -173,7 +169,7 @@ bytesim_platform/                      ← 编排仓（this repo）
 
 ### 共享 migration 的工程方式
 
-migrations 归 data_svc 仓所有；其它需要 PG 集成测试的 Python 服务（engine-registry / tco-engine）在自己的 `tests/integration/migrations/` 下 **vendored 一份副本**。data_svc 改 schema 时手动同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling，submodule 方案被这条限制堵了，这是务实折中。
+migrations 归 data_svc 仓所有；其它需要 PG 集成测试的 Python 服务（tco-engine）在自己的 `tests/integration/migrations/` 下 **vendored 一份副本**。data_svc 改 schema 时手动同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling，submodule 方案被这条限制堵了，这是务实折中。（注：engine-registry 仓在 P3 收敛中已合并入 engine_svc，连带它的 vendored migrations 也已退役。）
 
 ### Phase 2：artifact 内容入库
 
@@ -202,12 +198,11 @@ migrations 归 data_svc 仓所有；其它需要 PG 集成测试的 Python 服�
 | bff | 84% | — |
 | surrogate_svc | 87% | — |
 | engine_svc | 82% | — |
-| engine_registry_svc | 68% | store: 26% → **88%** |
 | tco_engine_svc | 82% | store: 24% → **90%** |
 | data_svc | 35% | total 35% → **61%**, store 3.5% → **47.5%** |
 | web | 73% lines | — |
 
-3 个有 PG 持久化的服务用 service container + 33 migrations 真跑 SQL；其余用 mock 已经够。
+P1/P2 收敛后只有 data_svc 真连 PG；tco_engine 还保留 PG 集成测试以验证 vendored migrations 与 data_svc 仓同步。
 
 ## 前端
 

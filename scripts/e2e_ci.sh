@@ -26,19 +26,19 @@ cleanup() {
     docker compose logs --no-color --tail=400 > "$LOG_DIR/all.log" 2>&1 || true
     # Per-service tail to make scanning easier than one giant file.
     for svc in bff data_svc engine_svc \
-               surrogate_svc postgres \
-               engine_registry_svc; do
+               surrogate_svc postgres; do
       docker compose logs --no-color --tail=200 "$svc" > "$LOG_DIR/$svc.log" 2>&1 || true
     done
     # RFC-001 v2 — engine registry state at failure time. /v1/engines lists
     # which engines self-registered + their last_seen_at; helpful when stage
     # 16 (heartbeat freshness) or stage 18 (auto-routing) fails because an
-    # engine wasn't actually registered.
-    docker compose exec -T engine_registry_svc \
+    # engine wasn't actually registered. The registry surface is now served
+    # by engine_svc since the merger.
+    docker compose exec -T engine_svc \
         sh -c 'python -c "
 import urllib.request, json
 try:
-    r = urllib.request.urlopen(\"http://localhost:8089/v1/engines\", timeout=2)
+    r = urllib.request.urlopen(\"http://localhost:8087/v1/engines\", timeout=2)
     print(json.dumps(json.loads(r.read()), indent=2, default=str))
 except Exception as e:
     print(\"registry unreachable:\", e)

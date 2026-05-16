@@ -10,7 +10,7 @@
 > - **Phase 3**：9 个服务物理拆出独立 git 仓，按 3 层布局组织：
 >   - `dashboard/` — Vite SPA
 >   - `bff/` — FastAPI 网关
->   - `backend/{data_svc,engine_svc,engine_registry_svc,surrogate_svc,bytesim_svc,tco_engine_svc}/` — 6 个后端
+>   - `backend/{data_svc,engine_svc,surrogate_svc,bytesim_svc,tco_engine_svc}/` — 5 个后端（P3 收敛中 engine_registry_svc 已合并入 engine_svc）
 >   - `engine_contracts/` — 跨服务契约源
 >
 >   每个仓通过 git submodule 接入平台仓，9 个仓全部在 GitHub `songwenjun-rs/bytesim-*` 私有。`docker-compose.yml` 的 build context 全部改成 `./<tier>/<svc>`。
@@ -18,7 +18,7 @@
 > **测试基础设施**
 > - 单服务测试下沉到各 submodule；平台仓 `tests/` 只保留跨服务集成（`engine_smoke/` / `db/` / `main_modules/` / `sdk/`）。
 > - 每个 submodule 一份 `.github/workflows/ci.yml`，独立 gate；平台仓 CI 只做 `docker compose config` + submodule 指针一致性校验。
-> - **3 个有 PG 持久化的服务（data_svc / engine_registry_svc / tco_engine_svc）** CI 加 `postgres:16-alpine` service container + 全 33 migrations apply + live-PG integration job。覆盖率：store.py 从 ~3-26% 拉到 47-90%。
+> - **PG 持久化**：P1/P2 收敛后只有 data_svc 直连 PG；tco_engine_svc 还保留 PG 集成测试以验证 vendored migrations。CI 加 `postgres:16-alpine` service container + 全 33 migrations apply + live-PG integration job。覆盖率：store.py 从 ~3-26% 拉到 47-90%。
 > - **`PG_DSN` 不再被测试代码读取**：测试只认 `BYTESIM_TEST_PG_DSN`，两者相等时 refuse to run。这条规则是 2026-05-14 事故吃出来的（Snapshot 测试用 PG_DSN 把用户 hwspec_topo_b1 覆盖空了），结构上保证测试不能碰生产 DB。
 >
 > 上一版（2026-05-12）的关键变更仍在主干上：
@@ -88,8 +88,8 @@ ByteSim 是 **AI 基础设施仿真平台**。给定硬件拓扑、模型、并�
         ┌────────┬──────────────┘   │   │   │   │
         ▼        ▼                  ▼   ▼   ▼   ▼
  ┌────────────┐ ┌──────────┐ ┌────────┐ ┌──────────────────┐ ┌─────────┐ ┌─────────────┐
- │ data_svc   │ │engine_svc│ │tco-svc │ │engine-registry   │ │surrogate│ │bytesim_svc  │
- │ :8081 (Go) │ │  :8087   │ │ :8090  │ │   -svc :8089     │ │ :8083   │ │   :8083     │
+ │ data_svc   │ │engine_svc (含registry)│ │tco-svc │ │surrogate│ │bytesim_svc  │
+ │ :8081 (Go) │ │       :8087           │ │ :8090  │ │ :8083   │ │   :8083     │
  │ runs +     │ │ (Python) │ │(Python)│ │     (Python)     │ │(Python) │ │  (Python)   │
  │ specs +    │ │          │ │        │ │                  │ │         │ │             │
  │ catalog    │ │          │ │        │ │                  │ │         │ │             │
@@ -130,7 +130,7 @@ ByteSim 是 **AI 基础设施仿真平台**。给定硬件拓扑、模型、并�
    ├─ baseline OR pinned (10–75%)
    │      • 普通：跑参考策略 TP4·PP4·EP8·1F1B 作为基线 (stage='baseline')
    │      • engine_preference 存在：跳过 scan，跑用户钉死的策略 (stage='pinned')
-   ├─ scan        (25–75%)  顺序 5 条候选 → engine-registry → predict；中途取消可 break
+   ├─ scan        (25–75%)  顺序 5 条候选 → registry surface（engine_svc 自身）→ predict；中途取消可 break
    ├─ top-k       (75–90%)  按 MFU 排前三，剔除 MFU=0 的不可行解
    └─ select      (90–100%) 标记 is_best、写 4 个 synthetic artifact、调 tco
 7. 每个 predict 响应 verbatim INSERT 到 bs_run_engine_call.response_jsonb（不 PATCH bs_run）
@@ -184,7 +184,7 @@ ByteSim 是 **AI 基础设施仿真平台**。给定硬件拓扑、模型、并�
 | DELETE | `/v1/runs/{id}` | 删 run + cascade 删 engine_call / event / artifact_ref / tco_breakdown |
 | GET / POST | `/v1/specs/{kind}/{id}/...` | 透传 data_svc 的 spec 路由，含 snapshot / diff / fork |
 | GET / POST / PUT / DELETE | `/v1/catalog/items/{kind}` | 硬件部件（cpu/gpu/nic/ssd）+ 仿真模板（train_preset/infer_preset） |
-| POST | `/v1/engines/predict` | 透传 PredictRequestEnvelope 到 engine-registry |
+| POST | `/v1/engines/predict` | 透传 PredictRequestEnvelope 到 engine_svc 的 registry surface（合并自 engine_registry_svc）|
 | WS   | `/v1/streams/run/{id}/log` | 代理 data_svc 的同名 WS，源是 `bs_run_event(kind=log)` 而非 engine.log 文件 |
 
 #### 鉴权与中间件
@@ -319,7 +319,17 @@ RETURNING id;
 
 每个阶段转换 INSERT 一行 `bs_run_event(kind, payload_jsonb)`，前端通过 data_svc 的 WS endpoint 拉取。kind 有 `status_change` / `stage_start` / `stage_end` / `log` / `warn`。详见 §4.3。
 
-### 3.5 engine_registry_svc（FastAPI · :8089）
+### 3.5 engine_svc 内的 registry surface（合并自 engine_registry_svc · :8087）
+
+> **历史**：原本是独立服务 `engine_registry_svc :8089`。P3 收敛把它合并进 engine_svc —— 三大职责（select / fanout / sweep）都属于 "engine 编排"，把它们放在 engine_svc 同进程内省一跳（pipeline → registry → engine 变成 pipeline → engine），运行时少一个容器、CI 少一个 image、bs_engine 数据访问仍走 data_svc HTTP（沿用 P2 的 RegistryStore 模式）。
+
+实现在 `service/engine_svc/app/registry/` 子包内：
+
+- `routes.py` — `/v1/engines` CRUD + `/v1/predict` 6 个 FastAPI 路由，挂在 engine_svc 主 app 上
+- `selector.py` / `router.py` — 包络匹配 + 选择算法
+- `store.py` — `RegistryStore`，通过 `RUN_SVC_URL` 调用 data_svc
+
+主进程在 `lifespan` 里同时启动 N 个 pipeline worker + 1 个 30s sweep task。
 
 #### 职责
 
@@ -356,11 +366,11 @@ RETURNING id;
 }
 ```
 
-让 engine_svc 与前端可追溯结果来源。
+让 engine_svc pipeline 与前端可追溯结果来源。
 
 #### 心跳 sweep
 
-后台 30s 跑一次 `disable_stale()`，把 `last_seen_at < now() - ENGINE_REGISTRY_STALE_S (默认 240s)` 的引擎置 `disabled`。引擎重新心跳后自动恢复 `active`。
+后台 30s 跑一次 `disable_stale()`，把 `last_seen_at < now() - ENGINE_REGISTRY_STALE_S (默认 240s)` 的引擎置 `disabled`。引擎重新心跳后自动恢复 `active`。多 replica 并存时 sweep 幂等，无需 leader election。
 
 ### 3.6 surrogate_svc（FastAPI · :8083）
 
@@ -403,7 +413,7 @@ RETURNING id;
 
 ### 3.7 tco_engine_svc（FastAPI · :8090）
 
-> **角色**（P1.2 之后）：TCO 是侧路服务，**不在** engine-registry 内。pipeline.select 阶段直接 POST `/v1/tco/compute` 带 `persist=true`，tco_engine_svc 写入 `bs_tco_breakdown` 表（专表，有结构化列），data_svc 的 `/report` 从那里读出来组装为 `report.tco`，engine identity 硬编码为 `tco-direct` / `0.1`。pre-P1.2 的"forge bs_run_engine_call(engine_name=tco-analytical) 行"路径已经移除 —— `bs_run_engine_call.request_jsonb` 重新只放 `EnginePredictRequest`。
+> **角色**（P1.2 之后）：TCO 是侧路服务，**不在** registry 选路链路内（即不参与 §3.5 的 select / fanout）。pipeline.select 阶段直接 POST `/v1/tco/compute` 带 `persist=true`，tco_engine_svc 写入 `bs_tco_breakdown` 表（专表，有结构化列），data_svc 的 `/report` 从那里读出来组装为 `report.tco`，engine identity 硬编码为 `tco-direct` / `0.1`。pre-P1.2 的"forge bs_run_engine_call(engine_name=tco-analytical) 行"路径已经移除 —— `bs_run_engine_call.request_jsonb` 重新只放 `EnginePredictRequest`。
 
 #### 端点
 
@@ -441,7 +451,7 @@ RETURNING id;
 
 > 按 `service/data_svc/migrations/NNN_topic.sql` 顺序执行（migrations 归 data_svc 仓持有）。编号 003 / 004 / 005 / 018 / 019 / 030 留空对应已下线子系统。回滚通过部署上一个镜像 tag + 必要时从 pg_dump 还原。
 >
-> **跨仓共享方式**：engine_registry_svc / tco_engine_svc 的 `tests/integration/migrations/` 各 vendor 一份完整副本（CI 用 postgres service container 时 apply）。data_svc 改 schema 时手工同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling，submodule 方案被堵。
+> **跨仓共享方式**：tco_engine_svc 的 `tests/integration/migrations/` vendor 一份完整副本（CI 用 postgres service container 时 apply）。data_svc 改 schema 时手工同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling，submodule 方案被堵。（P3 之前 engine_registry_svc 也有自己的 vendored 副本，合并入 engine_svc 后随仓退役。）
 
 | 编号 | 主题 | 关键表 |
 |-----:|------|------|
@@ -548,13 +558,13 @@ YAML 描述 30+ 个 `components/schemas`：
 - **CoverageEnvelope** — 引擎自报覆盖范围（model_families / parallelism / hardware / quant / modes）
 - **EnginePredictRequest** — cluster + model + workload + strategy
 - **EnginePredictResponse** — mfu_pct / step_ms / breakdown / peak_kw / confidence / feasible / coverage_status + 可选 KPI（ttft_ms / tpot_ms / kv_hit_rate / bottleneck / phase_breakdown 等）
-- **Wire shapes** — `EngineRegisterRequest`, `EngineCapabilities`, `EngineSmokeMatrix`（注册中心 ↔ 引擎间的注册 / 心跳 / smoke 协议）
+- **Wire shapes** — `EngineRegisterRequest`, `EngineCapabilities`, `EngineSmokeMatrix`（engine_svc 内的 registry surface ↔ 引擎间的注册 / 心跳 / smoke 协议）
 
 仓内只有 `components/schemas`，**没有 paths** —— HTTP 路径归各服务自己管，不集中在共享仓。
 
 ### 5.2 消费者怎么用：mode A 纯契约 + codegen
 
-每个消费者（bff / surrogate_svc / engine_registry_svc / bytesim_svc / web）在 build 时跑 codegen 脚本，把 YAML 转成本地代码：
+每个消费者（bff / surrogate_svc / engine_svc / bytesim_svc / web）在 build 时跑 codegen 脚本，把 YAML 转成本地代码：
 
 ```
 engine_contracts/
@@ -579,7 +589,7 @@ engine_contracts/
 
 ### 5.3 envelope_covers 不在契约里
 
-选择逻辑（`envelope_covers(env, request) -> (ok, miss_reasons)`）原本在 `shared/engine_contracts/envelope.py`，Phase 1 拆分时识别出这是 **engine_registry_svc 私有业务**（其他服务都不调用），整体搬到 `service/engine_registry_svc/app/selector.py`。同时把 `validate_envelope_intervals(env)`（JSON Schema 表达不了的 `lo ≤ hi` runtime check）也搬过去，在 register handler 调用。
+选择逻辑（`envelope_covers(env, request) -> (ok, miss_reasons)`）原本在 `shared/engine_contracts/envelope.py`，Phase 1 拆分时识别出这是 **registry 私有业务**（其他服务都不调用），整体搬到当时的 `service/engine_registry_svc/app/selector.py`。同时把 `validate_envelope_intervals(env)`（JSON Schema 表达不了的 `lo ≤ hi` runtime check）也搬过去，在 register handler 调用。P3 收敛中这一对模块随 registry surface 一起迁入 `service/engine_svc/app/registry/`。
 
 ### 5.4 engine_runtime 退役 → 各引擎 vendor 一份
 
@@ -688,7 +698,7 @@ for line in c.runs.tail("sim-7f2a"):
 - `./service/data_svc/migrations:/docker-entrypoint-initdb.d:ro` —— Postgres 启动自动跑 33 个 migration
 - `./infra/artifacts:/artifacts` —— Run 产物 host 持久化
 
-关键 env：`PG_DSN`、`ARTIFACTS_DIR=/artifacts`、`ENGINE_REGISTRY_URL=http://engine_registry_svc:8089`、`ENGINE_PREDICT_TIMEOUT_S=180`（容纳更慢的引擎插件）、`ENGINE_REGISTRY_STALE_S=240`、`POLL_INTERVAL_S=2`。Dev 还需 `BFF_ALLOW_DEV_SECRET=1` / `BFF_ALLOW_DEV_CORS=1`。
+关键 env：`PG_DSN`、`ARTIFACTS_DIR=/artifacts`、`ENGINE_REGISTRY_URL=http://engine_svc:8087`（P3 合并后默认就是 engine_svc 自身；同进程内 pipeline 走 `http://localhost:8087` loopback）、`ENGINE_PREDICT_TIMEOUT_S=180`（容纳更慢的引擎插件）、`ENGINE_REGISTRY_STALE_S=240`、`POLL_INTERVAL_S=2`。Dev 还需 `BFF_ALLOW_DEV_SECRET=1` / `BFF_ALLOW_DEV_CORS=1`。
 
 
 ### 8.2 Makefile 速查
@@ -709,8 +719,7 @@ for line in c.runs.tail("sim-7f2a"):
 | **bff 单测** | `pytest tests/`（在 `bff/`） | **84% 行覆盖** · 89 passed |
 | **surrogate_svc 单测** | `pytest tests/`（在 `service/surrogate_svc/`） | **87% 行覆盖** · 78 passed |
 | **engine_svc 单测** | `pytest tests/`（在 `service/engine_svc/`） | **82% 行覆盖** · 26 passed |
-| **engine_registry_svc** unit + integration | `pytest tests/[integration]`，CI 加 PG service container | unit 32 + integration 5 → **store: 26% → 88%** |
-| **tco_engine_svc** unit + integration | 同上 | unit 29 + integration 2 → **store: 24% → 90%** |
+| **tco_engine_svc** unit + integration | `pytest tests/[integration]`，CI 加 PG service container | unit 29 + integration 2 → **store: 24% → 90%** |
 | **data_svc** unit + integration | `go test -short` + `go test -tags=integration` | total **35% → 61%**, store **3.5% → 47.5%** |
 | **bytesim_svc** | `python -m py_compile app/**.py` | 无 runtime 测试（subprocess 外部 binary 难以单测）|
 | **engine_contracts** | codegen smoke（Python + TS） | 验证核心类型出现在生成产物 |
@@ -721,7 +730,7 @@ for line in c.runs.tail("sim-7f2a"):
 
 ### 8.4 CI（GitHub Actions · 每仓一份 ci.yml）
 
-**每个 submodule 一份独立的 `.github/workflows/ci.yml`**（共 10 个，含平台仓自身）：
+**每个 submodule 一份独立的 `.github/workflows/ci.yml`**（共 9 个，含平台仓自身）：
 
 | 仓 | CI job | 内容 |
 |---|---|---|
@@ -729,22 +738,21 @@ for line in c.runs.tail("sim-7f2a"):
 | dashboard | test | `npm ci && npm test` |
 | bff | test | `pytest tests/` |
 | service/data_svc | **unit + integration** | unit: `go test -short`；integration: PG service container + 33 migrations apply + `go test -tags=integration` |
-| service/engine_svc | test | `pytest tests/` |
-| service/engine_registry_svc | **unit + integration** | unit: `pytest --ignore=tests/integration`；integration: PG service container + vendored migrations + `pytest tests/integration` |
+| service/engine_svc | test | `pytest tests/`（P3 收敛后包含 registry surface 路由测试） |
 | service/surrogate_svc | test | `pytest tests/` |
 | service/bytesim_svc | compile | `python -m py_compile app/**.py` |
-| service/tco_engine_svc | **unit + integration** | 同 engine_registry_svc 模式 |
+| service/tco_engine_svc | **unit + integration** | unit: `pytest --ignore=tests/integration`；integration: PG service container + vendored migrations + `pytest tests/integration` |
 | **bytesim_platform**（编排仓） | validate | `docker compose config` + `.gitmodules` 完整性 + gitlink ↔ 声明一致性 |
 
 #### 测试 PG 命名空间隔离（2026-05-14 引入）
 
-3 个有 PG 集成的服务（data_svc / engine-registry / tco-engine）的测试代码**只读 `BYTESIM_TEST_PG_DSN`**，**永不读 `PG_DSN`**（后者是生产 / docker-compose 的连接串）。两者相等时（手动短路），测试 `t.Fatalf` / `pytest.fail` 拒绝执行。
+P1/P2 收敛后只有 data_svc 直连 PG；剩下 tco-engine 还保留 PG 集成测试（验证 vendored migrations）。这些测试代码**只读 `BYTESIM_TEST_PG_DSN`**，**永不读 `PG_DSN`**（后者是生产 / docker-compose 的连接串）。两者相等时（手动短路），测试 `t.Fatalf` / `pytest.fail` 拒绝执行。
 
 这条规则是事故吃出来的：拆仓前 Snapshot 测试用 PG_DSN 跑过 docker-compose PG，把用户 `hwspec_topo_b1` 覆盖空了。现在 env 命名空间隔离 + 守护检查使测试结构上不可能碰生产 DB。
 
 #### 跨仓 migration 共享
 
-data_svc 是 schema 的唯一拥有者（33 个 `.sql` 在 `service/data_svc/migrations/`）。其它需要 PG 集成测试的 Python 服务（engine-registry / tco-engine）在自己仓 `tests/integration/migrations/` 下 **vendor 一份副本**。data_svc 改 schema 时手动同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling 仓，submodule 方案被这条限制堵了。
+data_svc 是 schema 的唯一拥有者（33 个 `.sql` 在 `service/data_svc/migrations/`）。其它需要 PG 集成测试的 Python 服务（tco-engine）在自己仓 `tests/integration/migrations/` 下 **vendor 一份副本**。data_svc 改 schema 时手动同步——GitHub Actions 默认 `GITHUB_TOKEN` 不能 clone 私有 sibling 仓，submodule 方案被这条限制堵了。
 
 ### 8.5 端到端脚本
 
@@ -807,7 +815,7 @@ cycle-accurate 优先于 analytical（精度高 > 快），同保真度比 MAPE�
 
 ### 9.9 best-effort TCO：侧路服务（P1.2 之后）
 
-engine_svc 完成 select 后调一次 tco_engine_svc 带 `persist=true`，**失败只记日志，不 fail Run**。TCO 写自己的 `bs_tco_breakdown` 表，data_svc `/report` 从那里读出来塞进 `report.tco`。TCO **不在** engine-registry —— 它没有 calibration / heartbeat / envelope，是一个 rule-based 价格服务。把它伪装成 engine_call 行的旧路径（pre-P1.2）已删除，`bs_run_engine_call.request_jsonb` 重新只放 `EnginePredictRequest`。
+engine_svc 完成 select 后调一次 tco_engine_svc 带 `persist=true`，**失败只记日志，不 fail Run**。TCO 写自己的 `bs_tco_breakdown` 表，data_svc `/report` 从那里读出来塞进 `report.tco`。TCO **不在** §3.5 的 registry 选路链路内 —— 它没有 calibration / heartbeat / envelope，是一个 rule-based 价格服务。把它伪装成 engine_call 行的旧路径（pre-P1.2）已删除，`bs_run_engine_call.request_jsonb` 重新只放 `EnginePredictRequest`。
 
 ### 9.10 `_provenance` 注入 + X-Trace-Id：可追溯
 

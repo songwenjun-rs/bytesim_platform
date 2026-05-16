@@ -21,7 +21,6 @@ ALL=(
   "service/data_svc"
   "bff"
   "service/engine_svc"
-  "service/engine_registry_svc"
   "service/surrogate_svc"
   "service/bytesim_svc"
   "service/tco_engine_svc"
