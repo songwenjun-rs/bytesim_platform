@@ -58,6 +58,39 @@ make down       # 保留 volume（pgdata + 用户数据）
 make reset      # docker-compose down -v && up，清空 PG
 ```
 
+### 跨机部署
+
+每个 submodule 自带一份 `docker-compose.yml`，把"这一个服务"独立部署到任意主机上。服务之间通过环境变量（默认 `host.docker.internal:<port>`）找彼此，所以不再依赖 docker 内网的 service-name DNS——把每条 compose 跑在不同物理机 / 容器主机上就是天然的跨机部署。
+
+```bash
+# 在 "data" 主机：拉起 postgres + data_svc
+cd service/data_svc
+docker compose -f docker-compose.postgres.yml -f docker-compose.yml up -d
+
+# 在 "engine" 主机：tco_svc / surrogate_svc / engine_svc 共栈
+cd service/tco_svc        && docker compose up -d
+cd service/surrogate_svc  && \
+  ENGINE_SELF_URL=http://<engine-host>:8083 docker compose up -d
+cd service/engine_svc     && \
+  RUN_SVC_URL=http://<data-host>:8081 docker compose up -d
+
+# 在 "gateway" 主机：bff
+cd bff && \
+  RUN_SVC_URL=http://<data-host>:8081 \
+  ASSET_SVC_URL=http://<data-host>:8081 \
+  ENGINE_SVC_URL=http://<engine-host>:8087 \
+  ENGINE_REGISTRY_URL=http://<engine-host>:8087 \
+  TCO_SVC_URL=http://<engine-host>:8090 \
+  BFF_JWT_SECRET=$(openssl rand -hex 32) \
+  docker compose up -d
+
+# 在 "edge" 主机：nginx + SPA
+cd dashboard && \
+  BFF_UPSTREAM=<gateway-host>:8080 docker compose up -d
+```
+
+服务之间所有 URL 都从 env 读，没默认到 `<svc-name>:<port>` 那种 docker-DNS 风格的硬编码。同机多栈 dev 用 `host.docker.internal:<published-port>` 默认值即可工作；跨真实主机就把 `<host>` 换成对端的 IP/DNS。每条 compose 也支持 `<SVC>_HOST_PORT` 改宿主端口避免冲突。
+
 ## 架构
 
 ```
