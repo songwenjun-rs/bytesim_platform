@@ -51,8 +51,10 @@ services:
     restart: unless-stopped
     build: ./service/data_svc
     environment:
-      PG_DSN: ${PG_DSN:-postgres://bytesim:bytesim@host.docker.internal:5432/bytesim?sslmode=disable}
+      PG_DSN: ${PG_DSN:-postgres://bytesim:bytesim@postgres:5432/bytesim?sslmode=disable}
       LISTEN_ADDR: ${LISTEN_ADDR:-:8081}
+    depends_on:
+      - postgres
     ports:
       - "${DATA_SVC_HOST_PORT:-8081}:8081"
 
@@ -61,7 +63,7 @@ services:
     restart: unless-stopped
     build: ./service/tco_svc
     environment:
-      RUN_SVC_URL: ${RUN_SVC_URL:-http://host.docker.internal:8081}
+      RUN_SVC_URL: ${RUN_SVC_URL:-http://data_svc:8081}
     ports:
       - "${TCO_SVC_HOST_PORT:-8090}:8090"
 
@@ -70,22 +72,24 @@ services:
     restart: unless-stopped
     build: ./service/surrogate_svc
     environment:
-      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
-      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://host.docker.internal:8083}
-      ASSET_SVC_URL: ${ASSET_SVC_URL:-http://host.docker.internal:8081}
+      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://engine_svc:8087}
+      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://surrogate_svc:8083}
+      ASSET_SVC_URL: ${ASSET_SVC_URL:-http://data_svc:8081}
     ports:
       - "${SURROGATE_HOST_PORT:-8083}:8083"
 
   # ===== service/bytesim_svc/docker-compose.yml =====
-  # 注意：bytesim_svc 默认不在 `make up` 中启动；其构建依赖 repo 中
-  # 不包含的外部资产（engine/bytesim/synverse/src、extern/charon、
-  # topo_files、network_config.toml）。需要时使用 `make up-all`。
+  # 注意：bytesim_svc 默认不在 `make up` 中启动；其构建依赖
+  # engine/bytesim 子模块及其递归子模块（尤其 extern/charon）。
+  # 需要时使用 `make up-all`。
   bytesim_svc:
     restart: unless-stopped
-    build: ./service/bytesim_svc
+    build:
+      context: .
+      dockerfile: service/bytesim_svc/Dockerfile
     environment:
-      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
-      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://host.docker.internal:8086}
+      ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://engine_svc:8087}
+      ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://bytesim_svc:8083}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
       start_period: 20s
@@ -100,14 +104,14 @@ services:
     restart: unless-stopped
     build: ./service/engine_svc
     environment:
-      RUN_SVC_URL: ${RUN_SVC_URL:-http://host.docker.internal:8081}
+      RUN_SVC_URL: ${RUN_SVC_URL:-http://data_svc:8081}
       # Loopback by default — the registry surface lives in this same
       # process, so the pipeline's predict client can stay in-process.
       # Override only for split deployments where pipeline runs on a
       # different replica from the registry routes (uncommon).
       ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://localhost:8087}
-      SURROGATE_URL: ${SURROGATE_URL:-http://host.docker.internal:8083}
-      TCO_SVC_URL: ${TCO_SVC_URL:-http://host.docker.internal:8090}
+      SURROGATE_URL: ${SURROGATE_URL:-http://surrogate_svc:8083}
+      TCO_SVC_URL: ${TCO_SVC_URL:-http://tco_svc:8090}
       POLL_INTERVAL_S: ${POLL_INTERVAL_S:-2}
       ENGINE_PREDICT_TIMEOUT_S: ${ENGINE_PREDICT_TIMEOUT_S:-180}
       ENGINE_REGISTRY_STALE_S: ${ENGINE_REGISTRY_STALE_S:-240}
@@ -119,11 +123,11 @@ services:
     restart: unless-stopped
     build: ./bff
     environment:
-      - RUN_SVC_URL=${RUN_SVC_URL:-http://host.docker.internal:8081}
-      - ASSET_SVC_URL=${ASSET_SVC_URL:-http://host.docker.internal:8081}
-      - ENGINE_SVC_URL=${ENGINE_SVC_URL:-http://host.docker.internal:8087}
-      - ENGINE_REGISTRY_URL=${ENGINE_REGISTRY_URL:-http://host.docker.internal:8087}
-      - TCO_SVC_URL=${TCO_SVC_URL:-http://host.docker.internal:8090}
+      - RUN_SVC_URL=${RUN_SVC_URL:-http://data_svc:8081}
+      - ASSET_SVC_URL=${ASSET_SVC_URL:-http://data_svc:8081}
+      - ENGINE_SVC_URL=${ENGINE_SVC_URL:-http://engine_svc:8087}
+      - ENGINE_REGISTRY_URL=${ENGINE_REGISTRY_URL:-http://engine_svc:8087}
+      - TCO_SVC_URL=${TCO_SVC_URL:-http://tco_svc:8090}
       - LISTEN_PORT=${LISTEN_PORT:-8080}
       - BFF_JWT_SECRET
       # dev 覆盖：原主文件中 services.bff 的额外环境变量
