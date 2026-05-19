@@ -13,7 +13,7 @@ import pgserver
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SQL_DIR = ROOT / "infra" / "postgres"
+SQL_DIR = ROOT / "service" / "data_svc" / "migrations"
 
 
 @pytest.fixture(scope="module")
@@ -27,8 +27,12 @@ def merge_dsn():
     async def apply():
         conn = await asyncpg.connect(uri)
         try:
-            sql = (SQL_DIR / "017_jsonb_deep_merge.sql").read_text()
-            await conn.execute(sql)
+                sql = (SQL_DIR / "001_schema.sql").read_text()
+                sql = "\n".join(
+                    line for line in sql.splitlines()
+                    if "CREATE EXTENSION" not in line.upper()
+                )
+                await conn.execute(sql)
         finally:
             await conn.close()
 

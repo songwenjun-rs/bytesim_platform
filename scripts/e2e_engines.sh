@@ -48,6 +48,7 @@ ENGINES_BODY="$(curl_auth GET "$BFF/v1/engines")"
 debug_dump "engines-step3-engines.json" "$ENGINES_BODY"
 assert_python "$ENGINES_BODY" '
 import sys, json
+import re
 from datetime import datetime, timezone
 engines = json.loads(sys.argv[1])
 by_name = {e["name"]: e for e in engines}
@@ -63,7 +64,9 @@ env = e.get("coverage_envelope") or {}
 assert env.get("model_families"), f"{required} missing coverage_envelope.model_families"
 last = e.get("last_seen_at")
 assert last, f"{required} has no last_seen_at — heartbeat loop never fired"
-seen = datetime.fromisoformat(last.replace("Z", "+00:00"))
+ts = last.replace("Z", "+00:00")
+ts = re.sub(r"\.(\d{1,6})([+-]\d\d:\d\d)$", lambda m: "." + m.group(1).ljust(6, "0") + m.group(2), ts)
+seen = datetime.fromisoformat(ts)
 age_s = (datetime.now(timezone.utc) - seen).total_seconds()
 assert age_s < 90, f"{required} last_seen_at {age_s:.0f}s old — heartbeat stale"
 print(f"  registered={sorted(by_name)}  heartbeat fresh")

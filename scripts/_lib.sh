@@ -72,14 +72,15 @@ print("" if v is None else v)' "$1" "$2"
 # Polls until URL returns HTTP 200 or timeout. Used pre-auth (healthz).
 wait_for_url() {
   local url="$1" timeout="${2:-60}"
-  local deadline=$(( $(date +%s) + timeout ))
+  local deadline=$(( $(date +%s) + timeout )) code=""
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -sS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null | grep -q '^200$'; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then
       return 0
     fi
     sleep 2
   done
-  fail "timeout: $url did not return 200 within ${timeout}s"
+  fail "timeout: $url did not return 200 within ${timeout}s (last HTTP code: ${code:-none})"
 }
 
 # wait_for_field URL FIELD EXPECTED TIMEOUT_S

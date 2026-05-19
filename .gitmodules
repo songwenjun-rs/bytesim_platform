@@ -22,3 +22,7 @@
 [submodule "service/tco_svc"]
 	path = service/tco_svc
 	url = git@github.com:songwenjun-rs/bytesim_tco_svc.git
+[submodule "engine/bytesim"]
+	path = engine/bytesim
+	url = git@code.byted.org:net/bytesim.git
+	branch = docker_songwenjun

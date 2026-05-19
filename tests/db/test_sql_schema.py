@@ -15,7 +15,7 @@ import pglast
 from pglast import ast
 
 ROOT = Path(__file__).resolve().parents[2]
-SQL_DIR = ROOT / "infra" / "postgres"
+SQL_DIR = ROOT / "service" / "data_svc" / "migrations"
 
 SQL_FILES = sorted(SQL_DIR.glob("*.sql"))
 
@@ -32,49 +32,53 @@ def test_sql_file_parses(sql_path: Path):
 
 
 def test_init_creates_core_tables():
-    """001_init.sql must declare bs_project / bs_spec / bs_run / bs_spec_version."""
-    sql = (SQL_DIR / "001_init.sql").read_text().lower()
-    for tbl in ("bs_project", "bs_spec", "bs_spec_version", "bs_run", "bs_run_uses_spec", "bs_lineage_edge"):
+    """001_schema.sql must declare the consolidated runtime tables."""
+    sql = (SQL_DIR / "001_schema.sql").read_text().lower()
+    for tbl in (
+        "bs_project",
+        "bs_spec",
+        "bs_spec_version",
+        "bs_catalog",
+        "bs_engine",
+        "bs_run",
+        "bs_run_event",
+        "bs_run_engine_call",
+        "bs_run_uses_spec",
+        "bs_run_artifact",
+        "bs_tco_rule",
+    ):
         assert f"create table {tbl}" in sql or f"create table if not exists {tbl}" in sql, \
-            f"missing table {tbl} in init"
+            f"missing table {tbl} in schema"
 
 
 def test_seed_references_existing_project():
-    """002_seed.sql must only insert rows for project ids that bs_project also seeds."""
-    sql = (SQL_DIR / "002_seed.sql").read_text()
-    # Every bs_run / bs_spec INSERT must reference 'p_default'.
+    """002_reference.sql must seed projects before reference rows that can depend on them."""
+    sql = (SQL_DIR / "002_reference.sql").read_text()
     assert "'p_default'" in sql
-    # And p_default itself must be declared first in bs_project.
+    assert "'p_lab'" in sql
     assert "INSERT INTO bs_project" in sql
     pos_proj = sql.find("INSERT INTO bs_project")
-    pos_spec = sql.find("INSERT INTO bs_spec")
-    assert pos_proj < pos_spec, "bs_project insert must precede bs_spec inserts"
+    pos_tco = sql.find("INSERT INTO bs_tco_rule")
+    assert pos_proj < pos_tco, "bs_project insert must precede reference inserts"
 
 
-def test_multi_project_seed_is_isolated():
-    """007_multi_project.sql declares p_lab and never references p_default."""
-    sql = (SQL_DIR / "007_multi_project.sql").read_text()
-    assert "'p_lab'" in sql
-    # No row in this file should be tagged with p_default — that would mean a
-    # seed leak across projects.
-    # Tolerate the word inside comments though, so check INSERT lines only.
+def test_demo_seed_is_default_project_only():
+    """003_demo.sql seeds demo specs into p_default only."""
+    sql = (SQL_DIR / "003_demo.sql").read_text()
+    assert "'p_default'" in sql
     for line in sql.splitlines():
         s = line.strip()
         if s.startswith("--") or not s:
             continue
-        if "p_default" in s:
-            pytest.fail(f"007_multi_project.sql leaks p_default: {s}")
+        if "p_lab" in s:
+            pytest.fail(f"003_demo.sql leaks p_lab: {s}")
 
 
-def test_multi_project_specs_have_unique_ids():
-    """The seed should not collide with hwspec_topo_b1 / model_moe256e etc."""
-    sql_default = (SQL_DIR / "002_seed.sql").read_text()
-    sql_lab = (SQL_DIR / "007_multi_project.sql").read_text()
-    for spec_id in ("hwspec_topo_b1", "model_moe256e", "strategy_moescan", "workload_train"):
-        assert spec_id in sql_default
-        assert spec_id not in sql_lab, f"slice-15 lab seed collides on {spec_id}"
-    for spec_id in ("hwspec_lab_a", "model_lab_dense", "strategy_lab", "workload_lab_inf"):
-        assert spec_id in sql_lab
+def test_demo_specs_have_expected_ids():
+    """The demo seed should keep the canonical onboarding spec ids stable."""
+    sql_demo = (SQL_DIR / "003_demo.sql").read_text()
+    for spec_id in ("hwspec_topo_b1", "model_moe256e", "strategy_train_b1", "workload_train_b1"):
+        assert spec_id in sql_demo
 
 
 def test_all_files_load_in_lexical_order_without_repeating_create_table():

@@ -79,9 +79,9 @@ services:
       - "${SURROGATE_HOST_PORT:-8083}:8083"
 
   # ===== service/bytesim_svc/docker-compose.yml =====
-  # 注意：bytesim_svc 默认不在 `make up` 中启动；其构建依赖
-  # engine/bytesim 子模块及其递归子模块（尤其 extern/charon）。
-  # 需要时使用 `make up-all`。
+  # bytesim_svc 使用生产形态构建：service 与 engine/bytesim 在镜像内
+  # 固化，Linux bytesim_py 在镜像构建期编译，运行期不再依赖宿主机
+  # engine/deps volume。
   bytesim_svc:
     restart: unless-stopped
     build:
@@ -90,9 +90,13 @@ services:
     environment:
       ENGINE_REGISTRY_URL: ${ENGINE_REGISTRY_URL:-http://engine_svc:8087}
       ENGINE_SELF_URL: ${ENGINE_SELF_URL:-http://bytesim_svc:8083}
+      BYTESIM_ROOT: /opt/bytesim
+      BYTESIM_DEFAULT_BACKEND: ${BYTESIM_DEFAULT_BACKEND:-bytesim_api}
+      BYTESIM_RUNS_DIR: /tmp/bytesim_runs
+      PYTHONPATH: /opt/bytesim/synverse/src:/opt/bytesim/extern/charon:/opt/bytesim/extern/charon/sweep/training:/app/compat:/app
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
-      start_period: 20s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8083/readyz', timeout=2)"]
+      start_period: 60s
       interval: 10s
       timeout: 5s
       retries: 5
@@ -114,7 +118,7 @@ services:
       TCO_SVC_URL: ${TCO_SVC_URL:-http://tco_svc:8090}
       POLL_INTERVAL_S: ${POLL_INTERVAL_S:-2}
       ENGINE_PREDICT_TIMEOUT_S: ${ENGINE_PREDICT_TIMEOUT_S:-180}
-      ENGINE_REGISTRY_STALE_S: ${ENGINE_REGISTRY_STALE_S:-240}
+      ENGINE_REGISTRY_STALE_S: ${ENGINE_REGISTRY_STALE_S:-900}
     ports:
       - "${ENGINE_SVC_HOST_PORT:-8087}:8087"
 

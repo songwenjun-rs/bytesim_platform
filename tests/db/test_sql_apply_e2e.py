@@ -1,6 +1,5 @@
-"""End-to-end: spin up a real Postgres via pgserver, apply 001..007 in order,
-then assert the resulting state matches what the BFF + slice-15 multi-project
-expects.
+"""End-to-end: spin up a real Postgres via pgserver, apply data_svc migrations
+in order, then assert the resulting state matches the current seed contract.
 
 This catches problems that the AST-only test can't:
 * missing FK targets
@@ -20,7 +19,7 @@ import pgserver
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SQL_DIR = ROOT / "infra" / "postgres"
+SQL_DIR = ROOT / "service" / "data_svc" / "migrations"
 
 
 @pytest.fixture(scope="module")
@@ -81,8 +80,8 @@ def test_runs_isolated_by_project(applied_dsn):
         try:
             n_default = await c.fetchval("SELECT count(*) FROM bs_run WHERE project_id='p_default'")
             n_lab = await c.fetchval("SELECT count(*) FROM bs_run WHERE project_id='p_lab'")
-            assert n_default >= 4  # sim-7e90, sim-7f2a, +children
-            assert n_lab == 2      # lab-001, lab-002
+            assert n_default == 0
+            assert n_lab == 0
             # No row carries a phantom project id.
             ghosts = await c.fetchval(
                 "SELECT count(*) FROM bs_run WHERE project_id NOT IN (SELECT id FROM bs_project)"
@@ -97,13 +96,15 @@ def test_specs_isolated_by_project(applied_dsn):
     async def go():
         c = await asyncpg.connect(applied_dsn)
         try:
+            n_default = await c.fetchval("SELECT count(*) FROM bs_spec WHERE project_id='p_default'")
             n_lab = await c.fetchval("SELECT count(*) FROM bs_spec WHERE project_id='p_lab'")
-            assert n_lab == 4  # hwspec_lab_a + model + strategy + workload
-            # Each lab spec must have a version row pointing at its latest_hash.
+            assert n_default >= 6
+            assert n_lab == 0
+            # Each demo spec must have a version row pointing at its latest_hash.
             missing = await c.fetchval("""
                 SELECT count(*) FROM bs_spec s
                 LEFT JOIN bs_spec_version v ON v.hash = s.latest_hash AND v.spec_id = s.id
-                WHERE s.project_id = 'p_lab' AND v.hash IS NULL
+                WHERE s.project_id = 'p_default' AND v.hash IS NULL
             """)
             assert missing == 0
         finally:

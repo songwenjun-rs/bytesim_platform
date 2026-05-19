@@ -1,61 +1,33 @@
-"""Real-Postgres tests for the per-service store layers (tco /
-engine-registry). Uses pgserver to spin up a temp PG, applies
-the migrations, then exercises each Store class against it.
+"""Store-client contract tests for Python services.
 
-These tests intentionally cover the SQL surface — they are slower than the
-mocked ones but catch query-shape regressions."""
+After the data-access consolidation, tco_svc and engine_svc registry stores
+are httpx clients to data_svc instead of direct asyncpg stores. These tests
+pin the request/response contract at that boundary.
+"""
 from __future__ import annotations
 
 import asyncio
-import os
+import importlib
+import json
 import sys
-import tempfile
 from pathlib import Path
+from typing import Any
 
-import asyncpg
-import pgserver
-import pytest
+import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 from _svc_path import svc_path_p  # noqa: E402
-SQL_DIR = ROOT / "infra" / "postgres"
-
-
-@pytest.fixture(scope="module")
-def pg_dsn():
-    tmp = tempfile.mkdtemp(prefix="bs-stores-")
-    srv = pgserver.get_server(tmp, cleanup_mode="stop")
-    uri = srv.get_uri()
-    yield uri
-    srv.cleanup()
-
-
-@pytest.fixture(scope="module")
-def applied_dsn(pg_dsn):
-    async def apply():
-        c = await asyncpg.connect(pg_dsn)
-        try:
-            for f in sorted(SQL_DIR.glob("*.sql")):
-                sql = f.read_text()
-                sql = "\n".join(l for l in sql.splitlines() if "CREATE EXTENSION" not in l.upper())
-                await c.execute(sql)
-        finally:
-            await c.close()
-    asyncio.new_event_loop().run_until_complete(apply())
-    return pg_dsn
 
 
 def _import(svc: str, mod: str):
-    """Mount a service on sys.path, import app.<mod>, return it. Caller is
-    responsible for restoring sys.path / sys.modules."""
     saved_path = list(sys.path)
     saved_mods = {k: v for k, v in sys.modules.items() if k == "app" or k.startswith("app.")}
     for k in list(saved_mods):
         del sys.modules[k]
     sys.path.insert(0, str(svc_path_p(ROOT, svc)))
     try:
-        return __import__(f"app.{mod}", fromlist=["*"])
+        return importlib.import_module(f"app.{mod}")
     finally:
         sys.path[:] = saved_path
         for k in list(sys.modules):
@@ -64,177 +36,131 @@ def _import(svc: str, mod: str):
         sys.modules.update(saved_mods)
 
 
-@pytest.fixture
-def tco_store_factory(applied_dsn):
+def _run(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def test_tco_rules_lookup_contract():
     mod = _import("tco_svc", "store")
+    seen: list[tuple[str, str, dict[str, str]]] = []
 
-    async def make():
-        s = mod.Store()
-        s.dsn = applied_dsn
-        await s.open()
-        return s
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/tco_rules":
+            return httpx.Response(200, json=[{"id": "gpu/B200/v2026q1", "vendor_sku": "Nvidia/B200-180GB"}])
+        if request.url.path == "/v1/tco_rules/match" and request.url.params.get("resource_kind") == "gpu":
+            return httpx.Response(200, json={"id": "gpu/B200/v2026q1", "resource_kind": "gpu"})
+        return httpx.Response(404, json={"detail": "not found"})
 
-    return make
-
-
-# ── §5 TCO store ─────────────────────────────────────────────────────
-
-def test_tco_rules_seeded_and_lookup(tco_store_factory):
     async def go():
-        s = await tco_store_factory()
+        s = mod.Store()
+        s.client = httpx.AsyncClient(base_url="http://data-svc", transport=httpx.MockTransport(handler))
         try:
             rules = await s.list_rules("gpu")
-            assert any(r["vendor_sku"] == "Nvidia/B200-180GB" for r in rules)
-            r = await s.find_rule("gpu", "Nvidia/B200-180GB")
-            assert r and r["id"] == "gpu/B200/v2026q1"
-            r = await s.find_rule("gpu", "Bogus/X")
-            assert r is not None
+            assert rules[0]["vendor_sku"] == "Nvidia/B200-180GB"
+            assert (await s.find_rule("gpu", "Nvidia/B200-180GB"))["id"] == "gpu/B200/v2026q1"
             assert await s.find_rule("nonexistent", None) is None
-            assert (await s.get_rule("gpu/B200/v2026q1"))["id"] == "gpu/B200/v2026q1"
-            assert await s.get_rule("missing") is None
         finally:
             await s.close()
-    asyncio.new_event_loop().run_until_complete(go())
+
+    _run(go())
+    assert ("GET", "/v1/tco_rules", {"resource_kind": "gpu"}) in seen
+    assert ("GET", "/v1/tco_rules/match", {"resource_kind": "gpu", "vendor_sku": "Nvidia/B200-180GB"}) in seen
 
 
-def test_tco_breakdown_upsert_idempotent(tco_store_factory, applied_dsn):
-    """Upserting the same run_id twice replaces the row (re-running TCO must
-    not create duplicate breakdowns)."""
+def test_tco_breakdown_put_get_contract():
+    mod = _import("tco_svc", "store")
+    bodies: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal current
+        if request.url.path == "/v1/runs/missing/tco_breakdown":
+            return httpx.Response(404, json={"detail": "not found"})
+        if request.url.path == "/v1/runs/sim-tco-test/tco_breakdown" and request.method == "PUT":
+            current = json.loads(request.content.decode("utf-8"))
+            bodies.append(current)
+            return httpx.Response(204)
+        if request.url.path == "/v1/runs/sim-tco-test/tco_breakdown" and request.method == "GET":
+            return httpx.Response(200, json=current)
+        return httpx.Response(404, json={"detail": "not found"})
+
     async def go():
-        c = await asyncpg.connect(applied_dsn)
+        s = mod.Store()
+        s.client = httpx.AsyncClient(base_url="http://data-svc", transport=httpx.MockTransport(handler))
         try:
-            await c.execute(
-                "INSERT INTO bs_run (id, project_id, kind, title, status, inputs_hash) "
-                "VALUES ('sim-tco-test', 'p_default', 'train', 't', 'done', 'h') "
-                "ON CONFLICT (id) DO NOTHING"
-            )
-        finally:
-            await c.close()
-
-        s = await tco_store_factory()
-        try:
-            body_v1 = {
-                "hw_capex_amortized_usd": 100, "power_opex_usd": 50,
-                "cooling_opex_usd": 9, "network_opex_usd": 1,
-                "storage_opex_usd": 2, "failure_penalty_usd": 0,
-                "total_usd": 162, "per_m_token_usd": 0.001,
-                "per_gpu_hour_usd": 5, "per_inference_request_usd": None,
-                "rule_versions": {"gpu/B200": "gpu/B200/v2026q1"},
-                "sensitivities": {},
-            }
-            await s.upsert_breakdown("sim-tco-test", body_v1)
-            got = await s.get_breakdown("sim-tco-test")
-            assert got["total_usd"] == 162
-
-            body_v2 = {**body_v1, "total_usd": 999, "power_opex_usd": 999}
-            await s.upsert_breakdown("sim-tco-test", body_v2)
-            got2 = await s.get_breakdown("sim-tco-test")
-            assert got2["total_usd"] == 999
-
+            await s.upsert_breakdown("sim-tco-test", {"total_usd": 162})
+            assert (await s.get_breakdown("sim-tco-test"))["total_usd"] == 162
+            await s.upsert_breakdown("sim-tco-test", {"total_usd": 999})
+            assert (await s.get_breakdown("sim-tco-test"))["total_usd"] == 999
             assert await s.get_breakdown("missing") is None
         finally:
             await s.close()
-    asyncio.new_event_loop().run_until_complete(go())
+
+    _run(go())
+    assert bodies == [{"total_usd": 162}, {"total_usd": 999}]
 
 
-# ── §2 Engine Registry store ─────────────────────────────────────────
+def test_engine_registry_client_contract():
+    mod = _import("engine_svc", "registry.store")
+    engines: dict[str, dict[str, Any]] = {}
 
-@pytest.fixture
-def engine_registry_store_factory(applied_dsn):
-    mod = _import("engine_registry_svc", "store")
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/engines" and request.method == "GET":
+            status = request.url.params.get("status")
+            rows = list(engines.values())
+            if status:
+                rows = [r for r in rows if r["status"] == status]
+            return httpx.Response(200, json=rows)
+        if path.startswith("/v1/engines/"):
+            name = path.split("/")[3]
+            if request.method == "PUT":
+                body = json.loads(request.content.decode("utf-8"))
+                engines[name] = {"name": name, "status": "active", **body}
+                return httpx.Response(200, json=engines[name])
+            if request.method == "GET":
+                row = engines.get(name)
+                return httpx.Response(200, json=row) if row else httpx.Response(404, json={})
+            if path.endswith("/heartbeat"):
+                return httpx.Response(204) if name in engines else httpx.Response(404, json={})
+            if path.endswith("/calibration"):
+                if name not in engines:
+                    return httpx.Response(404, json={})
+                engines[name]["calibration"] = json.loads(request.content.decode("utf-8"))["calibration"]
+                return httpx.Response(204)
+        return httpx.Response(404, json={})
 
-    async def make():
-        s = mod.Store()
-        s.dsn = applied_dsn
-        await s.open()
-        return s
-
-    return make
-
-
-def _registry_payload(name: str) -> dict:
-    """Test payload matching upsert_engine's kwargs surface (no `status` —
-    upsert_engine always writes status='active' itself)."""
-    return dict(
-        name=name, version="v0", fidelity="analytical", sla_p99_ms=100,
-        endpoint="http://x", predict_path="/v1/predict",
-        coverage_envelope={}, kpi_outputs=[], calibration={},
+    payload = dict(
+        name="test-eng",
+        version="v0",
+        fidelity="analytical",
+        sla_p99_ms=100,
+        endpoint="http://x",
+        predict_path="/v1/predict",
+        coverage_envelope={},
+        kpi_outputs=[],
+        calibration={},
         notes=None,
     )
 
-
-async def _delete_engine(applied_dsn: str, name: str) -> None:
-    """Cleanup helper — Store has no delete(); reach into raw SQL."""
-    c = await asyncpg.connect(applied_dsn)
-    try:
-        await c.execute("DELETE FROM bs_engine WHERE name = $1", name)
-    finally:
-        await c.close()
-
-
-def test_engine_registry_starts_empty_after_v2_cutover(engine_registry_store_factory):
-    """Migration 021 explicitly DELETEs any pre-seeded engine rows on
-    cutover — engines self-register at runtime via the SDK's register-
-    on-boot path. The test verifies that contract: a fresh DB after
-    migrations applied has zero engines."""
     async def go():
-        s = await engine_registry_store_factory()
+        s = mod.RegistryStore()
+        s.client = httpx.AsyncClient(base_url="http://data-svc", transport=httpx.MockTransport(handler))
         try:
-            rows = await s.list_engines(status=None)
-            assert rows == [], f"expected empty registry, got {rows}"
-        finally:
-            await s.close()
-    asyncio.new_event_loop().run_until_complete(go())
-
-
-def test_engine_registry_upsert_idempotent(engine_registry_store_factory, applied_dsn):
-    async def go():
-        s = await engine_registry_store_factory()
-        try:
-            payload = _registry_payload("test-eng")
+            assert await s.list_engines(status=None) == []
             await s.upsert_engine(**payload)
             await s.upsert_engine(**payload)
             rows = await s.list_engines(status=None)
             assert sum(1 for r in rows if r["name"] == "test-eng") == 1
+            assert await s.get_engine("test-eng") is not None
+            assert await s.get_engine("missing") is None
+            assert await s.heartbeat("test-eng") is True
+            assert await s.heartbeat("missing") is False
+            assert await s.set_calibration("test-eng", {"mape_pct": {"mfu": 3.2}}) is True
+            assert await s.set_calibration("missing", {}) is False
         finally:
             await s.close()
-            await _delete_engine(applied_dsn, "test-eng")
-    asyncio.new_event_loop().run_until_complete(go())
 
-
-def test_engine_registry_heartbeat(engine_registry_store_factory, applied_dsn):
-    async def go():
-        s = await engine_registry_store_factory()
-        try:
-            await s.upsert_engine(**_registry_payload("hb-eng"))
-            ok = await s.heartbeat("hb-eng")
-            assert ok is True
-            ok2 = await s.heartbeat("not-registered")
-            assert ok2 is False
-        finally:
-            await s.close()
-            await _delete_engine(applied_dsn, "hb-eng")
-    asyncio.new_event_loop().run_until_complete(go())
-
-
-def test_engine_registry_set_calibration(engine_registry_store_factory, applied_dsn):
-    """RFC-004 — calibration data writeback path."""
-    async def go():
-        s = await engine_registry_store_factory()
-        try:
-            await s.upsert_engine(**_registry_payload("cal-test"))
-            ok = await s.set_calibration("cal-test", {
-                "mape_pct": {"mfu": 3.2},
-                "profile_runs": ["snap-Q1-A"],
-            })
-            assert ok is True
-            row = next(r for r in await s.list_engines(status=None) if r["name"] == "cal-test")
-            assert row["calibration"]["mape_pct"]["mfu"] == 3.2
-            assert "snap-Q1-A" in row["calibration"]["profile_runs"]
-            ok2 = await s.set_calibration("not-registered", {"mape_pct": {}})
-            assert ok2 is False
-        finally:
-            await s.close()
-            await _delete_engine(applied_dsn, "cal-test")
-    asyncio.new_event_loop().run_until_complete(go())
-
+    _run(go())
+    assert engines["test-eng"]["calibration"]["mape_pct"]["mfu"] == 3.2

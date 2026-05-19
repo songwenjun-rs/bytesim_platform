@@ -1,0 +1,20 @@
+.git
+**/.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+**/node_modules
+
+# ByteSim production images rebuild the native module inside Linux.
+engine/bytesim/build
+engine/bytesim/bytesim_env
+engine/bytesim/synverse/src/bytesim_py*.so
+
+# Local/generated artifacts that are not part of the production runtime.
+service/bytesim_svc/output
+trace.json
+trace_3D_timeline.json

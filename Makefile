@@ -1,32 +1,32 @@
-.PHONY: up up-all down logs ps reset psql tidy fmt e2e e2e-ci e2e-engines surrogate-bench hwspec-doc engine-kick seed
+.PHONY: up up-all down logs ps reset psql tidy fmt e2e e2e-ci e2e-engines surrogate-bench hwspec-doc engine-kick seed bytesim-svc-compile
 
-# Default `up` skips bytesim_svc because its build requires external
-# engine assets (engine/bytesim/synverse/src, extern/charon, topo_files,
-# network_config.toml) that aren't in this repo. Use `make up-all` once
-# those paths are populated.
-up:
-	docker-compose up --build -d postgres data_svc tco_svc surrogate_svc engine_svc bff web
-	@echo "→ http://localhost:5173 (web)  ·  http://localhost:8080/healthz (bff)  ·  http://localhost:8081/healthz (data_svc)  ·  http://localhost:8087/healthz (engine_svc + registry)"
+PYTHON ?= python3.11
+COMPOSE ?= docker compose
 
-up-all:
-	docker-compose up --build -d
+bytesim-svc-compile:
+	$(PYTHON) -m py_compile service/bytesim_svc/app/*.py service/bytesim_svc/app/engine_runtime/*.py service/bytesim_svc/generated/*.py
+
+up: bytesim-svc-compile
+	$(COMPOSE) up -d --build
 	@echo "→ http://localhost:5173 (web)  ·  http://localhost:8080/healthz (bff)  ·  http://localhost:8081/healthz (data_svc)  ·  http://localhost:8087/healthz (engine_svc + registry)  ·  http://localhost:8086/healthz (bytesim)"
 
+up-all: up
+
 down:
-	docker-compose down
+	$(COMPOSE) down --remove-orphans
 
 reset:
-	docker-compose down -v
+	$(COMPOSE) down -v
 	$(MAKE) up
 
 logs:
-	docker-compose logs -f --tail=120
+	$(COMPOSE) logs -f --tail=120
 
 ps:
-	docker-compose ps
+	$(COMPOSE) ps
 
 psql:
-	docker-compose exec postgres psql -U bytesim -d bytesim
+	$(COMPOSE) exec postgres psql -U bytesim -d bytesim
 
 # Load demo specs into a freshly-migrated data_svc — 1 hwspec + 1 model +
 # 2 strategies + 2 workloads, enough for the UI to drive Training or
